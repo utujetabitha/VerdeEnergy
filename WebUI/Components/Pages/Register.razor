@@ -1,0 +1,24 @@
+@page "/register"
+@layout PublicLayout
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@inherits AuthPageBase
+
+<PageTitle>Create account | Verde Energy</PageTitle>
+
+<main class="auth-page">
+	<a href="/" class="request-back">&lt; Verde Energy</a>
+	<p class="public-eyebrow">Customer account</p>
+	<h1>Create your account</h1>
+	<p class="auth-lede">Book a Verde Drive service and keep your requests and payment status in one private place.</p>
+	@if (QueryValue("error") is { Length: > 0 } error) { <p class="auth-error" role="alert">@error</p> }
+	<form class="auth-form" action="/auth/register" method="post" data-enhance="false">
+		<input type="hidden" name="__RequestVerificationToken" value="@RequestVerificationToken" />
+		<label>Full name<input name="fullName" autocomplete="name" required minlength="2" /></label>
+		<label>Email<input name="email" type="email" autocomplete="email" required /></label>
+		<label>Phone number<input name="phoneNumber" type="tel" autocomplete="tel" /></label>
+		<label>Password<input name="password" type="password" autocomplete="new-password" required minlength="6" /></label>
+		<label>Confirm password<input name="confirmPassword" type="password" autocomplete="new-password" required minlength="6" /></label>
+		<button class="action-button" type="submit">Create account <span>-&gt;</span></button>
+	</form>
+	<p class="auth-switch">Already registered? <a href="/login">Sign in</a></p>
+</main>

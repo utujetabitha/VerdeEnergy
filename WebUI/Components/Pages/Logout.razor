@@ -1,0 +1,17 @@
+@page "/logout"
+@layout PublicLayout
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@inherits AuthPageBase
+
+<PageTitle>Sign out | Verde Energy</PageTitle>
+
+<main class="auth-page">
+	<a href="/account" class="request-back">&lt; My account</a>
+	<p class="public-eyebrow">Verde Energy account</p>
+	<h1>Sign out?</h1>
+	<p class="auth-lede">You will need to sign in again to see your bookings.</p>
+	<form class="auth-form" action="/auth/logout" method="post" data-enhance="false">
+		<input type="hidden" name="__RequestVerificationToken" value="@RequestVerificationToken" />
+		<button class="action-button" type="submit">Sign out</button>
+	</form>
+</main>

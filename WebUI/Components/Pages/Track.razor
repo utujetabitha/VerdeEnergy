@@ -1,0 +1,144 @@
+@page "/track"
+@layout PublicLayout
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@rendermode InteractiveServer
+@using Infrastructure.Persistence
+@using Microsoft.EntityFrameworkCore
+@inject VerdeEnergyDbContext Database
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Track a request | Verde Energy</PageTitle>
+
+<main class="request-page">
+	<header class="request-heading">
+		<a href="/" class="request-back">&lt; Verde Energy</a>
+		<p class="public-eyebrow">Verde Drive</p>
+		<h1>Track your request</h1>
+		<p>Enter the trip reference and the phone number used when booking to view the latest trip status and recorded battery charge.</p>
+	</header>
+
+	<section class="request-form-section">
+		<EditForm Model="lookupDraft" OnValidSubmit="FindTrip">
+			<DataAnnotationsValidator />
+			<div class="request-form-grid">
+				<label>Trip reference<InputText @bind-Value="lookupDraft.RequestNumber" placeholder="TRP-001" /></label>
+				<label>Booking phone number<InputText @bind-Value="lookupDraft.PhoneNumber" type="tel" autocomplete="tel" /></label>
+			</div>
+			<div class="request-submit-row"><p>Use the reference shown in your request confirmation. Status changes appear after the Verde team records them.</p><button class="action-button" type="submit">Check status <span>-&gt;</span></button></div>
+		</EditForm>
+
+		@if (!string.IsNullOrWhiteSpace(feedback))
+		{
+			<p class="request-feedback" role="status">@feedback</p>
+		}
+
+		@if (matchedTrip is not null)
+		{
+			<section class="tracking-result" aria-live="polite">
+				<div class="tracking-result-heading"><div><p class="public-eyebrow">TRP-@matchedTrip.Id.ToString("000")</p><h2>@matchedTrip.Status</h2></div><div><span class="status @matchedTrip.Status.ToLowerInvariant().Replace(" ", "-")">@matchedTrip.Status</span><button class="filter-button" type="button" @onclick="FindTrip">Refresh status</button></div></div>
+				<dl>
+					@if (!string.IsNullOrWhiteSpace(ownerDisplay))
+					{
+						<div><dt>Owned by</dt><dd>@ownerDisplay</dd></div>
+					}
+					<div><dt>Service</dt><dd>@matchedTrip.ServiceType</dd></div>
+					<div><dt>Charging station</dt><dd>@matchedTrip.StationName</dd></div>
+					<div><dt>Payment</dt><dd>@matchedTrip.PaymentStatus</dd></div>
+					<div><dt>Pickup</dt><dd>@matchedTrip.PickupLocation · @matchedTrip.PickupTime.ToString("dd MMM yyyy, HH:mm")</dd></div>
+					<div><dt>Return</dt><dd>@matchedTrip.ReturnLocation · @matchedTrip.ReturnTime.ToString("dd MMM yyyy, HH:mm")</dd></div>
+					@if (!string.IsNullOrWhiteSpace(matchedTrip.AssignedDriverName) && matchedTrip.AssignedDriverName != "Unassigned")
+					{
+						<div><dt>Driver</dt><dd>@matchedTrip.AssignedDriverName</dd></div>
+					}
+					@if (matchedSession is not null)
+					{
+						<div><dt>Hub bay</dt><dd>Bay @matchedSession.HubBayId.ToString("00")</dd></div>
+						<div><dt>Battery charge</dt><dd>@(matchedTrip.Status == "Charging" ? matchedSession.CurrentChargeLevel : matchedSession.FinalChargeLevel)</dd></div>
+						@if (matchedTrip.Status == "Charging" && TryGetChargePercent(matchedSession.CurrentChargeLevel, out var chargePercent))
+						{
+							<div class="tracking-progress"><progress max="100" value="@chargePercent">@chargePercent%</progress><span>@chargePercent%</span></div>
+						}
+						@if (matchedTrip.Status != "Charging")
+						{
+							<div><dt>Energy delivered</dt><dd>@matchedSession.KwDelivered kWh</dd></div>
+						}
+					}
+				</dl>
+				<p class="tracking-note">Status and battery progress show the latest readings entered by the Verde team. Live GPS and charger telemetry are not connected.</p>
+			</section>
+		}
+	</section>
+</main>
+
+@code {
+	private TripLookupDraft lookupDraft = new();
+	private TripRequest? matchedTrip;
+	private HubSession? matchedSession;
+	private string? feedback;
+
+	private async Task FindTrip()
+	{
+		var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+		var userId = authenticationState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+		var isAdmin = authenticationState.User.IsInRole("Admin");
+		if (string.IsNullOrWhiteSpace(userId))
+		{
+			matchedTrip = null;
+			matchedSession = null;
+			feedback = "Sign in to view your requests.";
+			return;
+		}
+
+		var reference = lookupDraft.RequestNumber.Trim();
+		if (reference.StartsWith("TRP-", StringComparison.OrdinalIgnoreCase)) reference = reference[4..];
+		if (!int.TryParse(reference, out var tripId))
+		{
+			matchedTrip = null;
+			matchedSession = null;
+			feedback = "Enter a valid request reference, for example TRP-001.";
+			return;
+		}
+
+		IQueryable<TripRequest> query = Database.TripRequests;
+		if (!isAdmin)
+		{
+			query = query.Where(trip => trip.CustomerUserId == userId);
+		}
+		matchedTrip = await query.FirstOrDefaultAsync(trip => trip.Id == tripId);
+
+		if (matchedTrip is not null)
+		{
+			matchedSession = await Database.HubSessions.FirstOrDefaultAsync(session => session.TripId == matchedTrip.Id);
+			if (isAdmin)
+			{
+				var owner = await Database.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == matchedTrip.CustomerUserId);
+				ownerDisplay = owner is null
+					? "Unknown customer"
+					: $"{(string.IsNullOrWhiteSpace(owner.FullName) ? (owner.UserName ?? owner.Email ?? "Unnamed") : owner.FullName)} <{owner.Email ?? owner.PhoneNumber ?? string.Empty}>";
+			}
+			else
+			{
+				ownerDisplay = null;
+			}
+			feedback = null;
+		}
+		else
+		{
+			matchedSession = null;
+			ownerDisplay = null;
+			feedback = isAdmin
+				? "No trip matches that reference. Verify the request number."
+				: "We couldn't find a request for your account with that reference.";
+		}
+	}
+
+	private string? ownerDisplay;
+
+	private static bool TryGetChargePercent(string value, out int percent) => int.TryParse(value.TrimEnd('%'), out percent);
+
+	private sealed class TripLookupDraft
+	{
+		[System.ComponentModel.DataAnnotations.Required] public string RequestNumber { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public string PhoneNumber { get; set; } = string.Empty;
+	}
+}

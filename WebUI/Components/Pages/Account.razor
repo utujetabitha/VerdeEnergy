@@ -1,0 +1,239 @@
+@page "/account"
+@layout PublicLayout
+@rendermode InteractiveServer
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@using Infrastructure.Persistence
+@using Microsoft.EntityFrameworkCore
+@inject VerdeEnergyDbContext Database
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject OperationsService Operations
+@inject ILogger<Account> Logger
+
+<PageTitle>My account | Verde Energy</PageTitle>
+
+<main class="request-page">
+	<header class="request-heading">
+		<p class="public-eyebrow">Private customer account</p>
+		<h1>Hello, @fullName</h1>
+		<p>Your bookings and payment records are visible only to your account and Verde administrators.</p>
+	</header>
+
+	<section class="request-form-section profile-section">
+		<div class="panel-header"><div><p class="eyebrow">Your profile</p><h2>Account details</h2></div></div>
+		<table class="profile-table">
+			<tbody>
+				<tr><th scope="row">Full name</th><td>@profileFullName</td></tr>
+				<tr><th scope="row">Email</th><td>@profileEmail</td></tr>
+				<tr><th scope="row">Phone</th><td>@profilePhone</td></tr>
+				@if (isAdmin)
+				{
+					<tr><th scope="row">Role</th><td><span class="badge-admin">Administrator</span></td></tr>
+				}
+			</tbody>
+		</table>
+	</section>
+
+	@if (isAdmin)
+	{
+		<section class="request-form-section">
+			<div class="panel-header"><div><p class="eyebrow">Administrator</p><h2>Internal shortcuts</h2></div></div>
+			<div class="admin-tiles">
+				<a class="admin-tile" href="/operations">
+					<span class="tile-icon">&#9632;</span>
+					<strong>Operations</strong>
+					<span>Desk · dispatch · driver · session</span>
+				</a>
+				<a class="admin-tile" href="/users">
+					<span class="tile-icon">&#128101;</span>
+					<strong>Users</strong>
+					<span>Credentials &amp; roles</span>
+				</a>
+				<a class="admin-tile" href="/vehicles">
+					<span class="tile-icon">&#9670;</span>
+					<strong>Fleet</strong>
+					<span>Vehicles &amp; batteries</span>
+				</a>
+				<a class="admin-tile" href="/finance">
+					<span class="tile-icon">&#8364;</span>
+					<strong>Finance</strong>
+					<span>Payments &amp; metrics</span>
+				</a>
+			</div>
+			<label class="admin-toggle">
+				<input type="checkbox" @bind="showAllCustomers" />
+				Show all customers (admin view)
+			</label>
+			@if (showAllCustomers)
+			{
+				<p class="station-note">You are viewing every Verde Drive booking and payment on behalf of all customers.</p>
+			}
+		</section>
+	}
+
+	<section class="account-actions">
+		<AuthorizeView Roles="Admin">
+			<Authorized>
+				<a class="action-button" href="/operations">Operations desk <span>-&gt;</span></a>
+			</Authorized>
+		</AuthorizeView>
+		<a class="action-button @(isAdmin ? "ghost" : "")" href="/book-drive">Book a charging service <span>-&gt;</span></a>
+		<a class="action-button ghost" href="/track">Track a request <span>-&gt;</span></a>
+	</section>
+	<section class="request-form-section">
+		<div class="panel-header"><div><p class="eyebrow">Your activity</p><h2>@(showAllCustomers ? "All customer charging requests" : "My charging requests")</h2></div><span class="table-count">@trips.Count trips</span></div>
+		@if (trips.Count == 0)
+		{
+			<p class="station-empty">No charging requests yet. <a href="/book-drive">Book a charging service</a>.</p>
+		}
+		else
+		{
+			<div class="table-wrap account-table-wrap">
+				<table>
+					<thead>
+						<tr>
+							<th>Reference</th>
+							@if (showAllCustomers) { <th>Owner</th> }
+							<th>Station</th>
+							<th>Service</th>
+							<th>Schedule</th>
+							<th>Payment</th>
+							<th>Trip status</th>
+						</tr>
+					</thead>
+					<tbody>
+						@foreach (var trip in trips)
+						{
+							<tr>
+								<td><a href="/track"><strong>TRP-@trip.Id.ToString("000")</strong></a></td>
+								@if (showAllCustomers)
+								{
+									var ownerKey = trip.CustomerUserId ?? "?";
+									var owner = tripOwners.TryGetValue(ownerKey, out var ownerName) ? ownerName : (trip.CustomerName ?? "Unknown");
+									<td>@owner</td>
+								}
+								<td>@trip.StationName</td>
+								<td>@trip.ServiceType</td>
+								<td>@trip.PickupTime.ToString("dd MMM yyyy, HH:mm")</td>
+								<td>@trip.PaymentStatus<br /><span class="muted">@trip.EstimatedCost</span></td>
+								<td>@trip.Status</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+	</section>
+	<section class="request-form-section">
+		<div class="panel-header"><div><p class="eyebrow">Your activity</p><h2>@(showAllCustomers ? "All customer payments" : "My payments")</h2></div><span class="table-count">@transactions.Count transactions</span></div>
+		@if (transactions.Count == 0)
+		{
+			<p class="station-note">No payments recorded yet.</p>
+		}
+		else
+		{
+			<div class="table-wrap account-table-wrap">
+				<table>
+					<thead>
+						<tr>
+							<th>Reference</th>
+							@if (showAllCustomers) { <th>Owner</th> }
+							<th>Service</th>
+							<th>Method</th>
+							<th>Amount</th>
+							<th>Status</th>
+						</tr>
+					</thead>
+					<tbody>
+						@foreach (var transaction in transactions)
+						{
+							<tr>
+								<td>@transaction.PaymentReference</td>
+								@if (showAllCustomers)
+								{
+									var ownerKey = transaction.OwnerUserId ?? "?";
+									var owner = transactionOwners.TryGetValue(ownerKey, out var ownerName) ? ownerName : (transaction.UserId ?? "Unknown");
+									<td>@owner</td>
+								}
+								<td>@transaction.ServiceType</td>
+								<td>@transaction.PaymentMethod</td>
+								<td>@Operations.FormatCurrency(transaction.Amount)</td>
+								<td>@transaction.TransactionStatus</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+	</section>
+</main>
+
+@code {
+	private string fullName = string.Empty;
+	private string profileFullName = "—";
+	private string profileEmail = "—";
+	private string profilePhone = "Not provided";
+	private bool isAdmin;
+	private bool showAllCustomers;
+	private List<TripRequest> trips = [];
+	private List<Transaction> transactions = [];
+	private readonly Dictionary<string, string> tripOwners = [];
+	private readonly Dictionary<string, string> transactionOwners = [];
+
+	protected override async Task OnInitializedAsync()
+	{
+		var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+		isAdmin = authenticationState.User.IsInRole("Admin");
+		var userId = authenticationState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+		if (string.IsNullOrWhiteSpace(userId)) return;
+
+		var user = await Database.Users.FindAsync(userId);
+		fullName = user?.FullName ?? authenticationState.User.Identity?.Name ?? "Customer";
+		profileFullName = string.IsNullOrWhiteSpace(user?.FullName) ? "—" : user.FullName;
+		profileEmail = string.IsNullOrWhiteSpace(user?.Email) ? "—" : user.Email;
+		profilePhone = string.IsNullOrWhiteSpace(user?.PhoneNumber) ? "Not provided" : user.PhoneNumber;
+		await RefreshDataAsync();
+	}
+
+	protected override async Task OnParametersSetAsync()
+	{
+		await base.OnParametersSetAsync();
+		await RefreshDataAsync();
+	}
+
+	private async Task RefreshDataAsync()
+	{
+		var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+		var userId = authenticationState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+		if (string.IsNullOrWhiteSpace(userId)) return;
+
+		IQueryable<TripRequest> tripsQuery = Database.TripRequests;
+		IQueryable<Transaction> transactionsQuery = Database.Transactions;
+
+		if (showAllCustomers && isAdmin)
+		{
+			trips = await tripsQuery.OrderByDescending(trip => trip.PickupTime).Take(500).ToListAsync();
+			transactions = await transactionsQuery.OrderByDescending(transaction => transaction.Id).Take(500).ToListAsync();
+
+			var tripOwnerIds = trips.Select(t => t.CustomerUserId).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToList();
+			var txOwnerIds = transactions.Select(t => t.OwnerUserId).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToList();
+			var allOwnerIds = tripOwnerIds.Union(txOwnerIds).Distinct().ToList();
+			if (allOwnerIds.Count > 0)
+			{
+				var owners = await Database.Users.AsNoTracking().Where(u => allOwnerIds.Contains(u.Id)).ToListAsync();
+				foreach (var owner in owners)
+				{
+					var label = string.IsNullOrWhiteSpace(owner.FullName) ? (owner.Email ?? owner.UserName ?? "Unknown") : $"{owner.FullName} <{owner.Email ?? owner.PhoneNumber ?? string.Empty}>";
+					tripOwners[owner.Id] = label;
+					transactionOwners[owner.Id] = label;
+				}
+			}
+		}
+		else
+		{
+			trips = await tripsQuery.Where(trip => trip.CustomerUserId == userId).OrderByDescending(trip => trip.PickupTime).ToListAsync();
+			transactions = await transactionsQuery.Where(transaction => transaction.OwnerUserId == userId).OrderByDescending(transaction => transaction.Id).ToListAsync();
+			tripOwners.Clear();
+			transactionOwners.Clear();
+		}
+	}
+}

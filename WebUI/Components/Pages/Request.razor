@@ -1,0 +1,171 @@
+@page "/request"
+@layout PublicLayout
+@rendermode InteractiveServer
+@inject OperationsService Operations
+@inject IConfiguration Configuration
+
+<PageTitle>Make a request | Verde Energy</PageTitle>
+
+<main class="request-page">
+	<header class="request-heading">
+		<a href="/" class="request-back">&lt; Verde Energy</a><a href="/track" class="request-track-link">Track an existing request</a>
+		<p class="public-eyebrow">Customer services - Kigali</p>
+		<h1>How can we help?</h1>
+		<p>Book a Verde Drive pickup or get an indicative home-charger estimate. Our team will confirm the details with you.</p>
+	</header>
+
+	<div class="request-tabs" role="tablist" aria-label="Choose a request type">
+		<button type="button" class="@(activeTab == "drive" ? "selected" : "")" role="tab" aria-selected="@(activeTab == "drive")" @onclick='() => activeTab = "drive"'>Verde Drive pickup</button>
+		<button type="button" class="@(activeTab == "install" ? "selected" : "")" role="tab" aria-selected="@(activeTab == "install")" @onclick='() => activeTab = "install"'>Installation estimate</button>
+	</div>
+
+	@if (!string.IsNullOrWhiteSpace(feedback))
+	{
+		<p class="request-feedback" role="status">@feedback</p>
+	}
+	@if (lastSubmittedTripId is int submittedTripId)
+	{
+		<p class="request-feedback"><a href="/track">Track TRP-@submittedTripId.ToString("000")</a></p>
+	}
+
+	@if (activeTab == "drive")
+	{
+		<section class="request-form-section" role="tabpanel">
+			<p class="public-eyebrow">Pickup and return charging</p>
+			<h2>Request a vehicle pickup</h2>
+			<p>Send your preferred pickup and return details. A dispatcher will confirm availability and assign a driver.</p>
+			<EditForm Model="tripDraft" OnValidSubmit="SubmitTrip">
+				<DataAnnotationsValidator />
+				<div class="request-form-grid">
+					<label>Your name<InputText @bind-Value="tripDraft.CustomerName" autocomplete="name" /></label>
+					<label>Phone number<InputText @bind-Value="tripDraft.CustomerPhoneNumber" type="tel" autocomplete="tel" /></label>
+					<label>Pickup location<InputText @bind-Value="tripDraft.PickupLocation" autocomplete="street-address" /></label>
+					<label>Return location<InputText @bind-Value="tripDraft.ReturnLocation" /></label>
+					<label>Preferred pickup<InputDate @bind-Value="tripDraft.PickupTime" Type="InputDateType.DateTimeLocal" /></label>
+					<label>Preferred return<InputDate @bind-Value="tripDraft.ReturnTime" Type="InputDateType.DateTimeLocal" /></label>
+				</div>
+				<div class="request-submit-row"><p>Submitting a request does not confirm a booking. Verde Energy will contact you to confirm.</p><button class="action-button" type="submit">Send pickup request <span>-&gt;</span></button></div>
+			</EditForm>
+		</section>
+	}
+	else
+	{
+		<section class="request-form-section" role="tabpanel">
+			<p class="public-eyebrow">Home charging installation</p>
+			<h2>Estimate your installation</h2>
+			<p>Enter a few site details to see a planning estimate. An engineer must review the site before a final quote is issued.</p>
+			<div class="estimate-assumptions"><strong>Indicative sample rates</strong><span>Charger FRW @ChargerCost.ToString("N0") + installation FRW @InstallationCost.ToString("N0") + cable FRW @CableCostPerMeter.ToString("N0") per metre. Three-phase multiplier: @ThreePhaseMultiplier.ToString("0.##").</span></div>
+			<EditForm Model="quoteDraft" OnValidSubmit="SubmitQuote">
+				<DataAnnotationsValidator />
+				<div class="request-form-grid">
+					<label>Your name<InputText @bind-Value="quoteDraft.ClientName" autocomplete="name" /></label>
+					<label>Phone number<InputText @bind-Value="quoteDraft.ClientPhoneNumber" type="tel" autocomplete="tel" /></label>
+					<label>Property type<InputSelect @bind-Value="quoteDraft.PropertyType"><option value="">Choose a property</option><option>Home</option><option>Office</option><option>Other</option></InputSelect></label>
+					<label>Electrical supply<InputSelect @bind-Value="quoteDraft.SupplyType"><option value="">Choose your supply</option><option>Single-phase</option><option>Three-phase</option><option>Not sure</option></InputSelect></label>
+					<label>Cable run from panel (metres)<InputNumber @bind-Value="cableLength" min="1" max="100" /></label>
+				</div>
+				@if (cableLength > 0)
+				{
+					<div class="estimate-result"><span>Indicative estimate</span><strong>FRW @CalculateEstimate().ToString("N0")</strong><small>Based on the sample rates above; excludes site-specific electrical work.</small></div>
+				}
+				<div class="request-submit-row"><p>This is not a final quote. An engineer will review the property and confirm the actual requirements and cost.</p><button class="action-button" type="submit">Send site details <span>-&gt;</span></button></div>
+			</EditForm>
+		</section>
+	}
+</main>
+
+@code {
+	private string activeTab = "drive";
+	private string? feedback;
+	private int cableLength = 10;
+	private int? lastSubmittedTripId;
+	private TripRequestDraft tripDraft = new();
+	private InstallationQuoteDraft quoteDraft = new();
+	private decimal ChargerCost => Configuration.GetValue<decimal>("InstallationEstimate:ChargerCost", 850000m);
+	private decimal InstallationCost => Configuration.GetValue<decimal>("InstallationEstimate:InstallationCost", 150000m);
+	private decimal CableCostPerMeter => Configuration.GetValue<decimal>("InstallationEstimate:CableCostPerMeter", 25000m);
+	private decimal ThreePhaseMultiplier => Configuration.GetValue<decimal>("InstallationEstimate:ThreePhaseMultiplier", 1.2m);
+
+	private void SubmitTrip()
+	{
+		if (tripDraft.PickupTime <= DateTime.Now)
+		{
+			feedback = "Choose a pickup time in the future.";
+			return;
+		}
+
+		if (tripDraft.ReturnTime <= tripDraft.PickupTime)
+		{
+			feedback = "Choose a return time later than the pickup time.";
+			return;
+		}
+
+		var trip = new TripRequest
+		{
+			Id = Operations.Trips.Count == 0 ? 1 : Operations.Trips.Max(item => item.Id) + 1,
+			CustomerName = tripDraft.CustomerName,
+			CustomerPhoneNumber = tripDraft.CustomerPhoneNumber,
+			PickupLocation = tripDraft.PickupLocation,
+			ReturnLocation = tripDraft.ReturnLocation,
+			PickupTime = tripDraft.PickupTime,
+			ReturnTime = tripDraft.ReturnTime,
+			AssignedDriverName = "Unassigned",
+			Status = "Requested",
+			HandoverConditionNotes = "Pre-trip inspection pending"
+		};
+		Operations.AddTrip(trip);
+		feedback = $"Request TRP-{trip.Id:000} received. Verde Energy will contact you to confirm availability.";
+		lastSubmittedTripId = trip.Id;
+		tripDraft = new();
+	}
+
+	private void SubmitQuote()
+	{
+		if (cableLength is < 1 or > 100)
+		{
+			feedback = "Enter a cable run between 1 and 100 metres.";
+			return;
+		}
+
+		var quote = new InstallationQuote
+		{
+			Id = Operations.Quotes.Count == 0 ? 1 : Operations.Quotes.Max(item => item.Id) + 1,
+			ClientName = quoteDraft.ClientName,
+			ClientPhoneNumber = quoteDraft.ClientPhoneNumber,
+			PropertyType = quoteDraft.PropertyType,
+			SupplyType = quoteDraft.SupplyType,
+			DistanceToPanelMeter = cableLength.ToString(),
+			EstimatedCost = Operations.FormatCurrency(CalculateEstimate().ToString("0")),
+			AssignedEngineerId = "Unassigned",
+			Status = "Site survey requested"
+		};
+		Operations.AddQuote(quote);
+		feedback = $"Site details received. Your indicative estimate is FRW {CalculateEstimate():N0}; an engineer will review it before issuing a final quote.";
+		lastSubmittedTripId = null;
+		quoteDraft = new();
+	}
+
+	private decimal CalculateEstimate()
+	{
+		var baseEstimate = ChargerCost + InstallationCost + cableLength * CableCostPerMeter;
+		return quoteDraft.SupplyType == "Three-phase" ? baseEstimate * ThreePhaseMultiplier : baseEstimate;
+	}
+
+	private sealed class TripRequestDraft
+	{
+		[System.ComponentModel.DataAnnotations.Required] public string CustomerName { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public string CustomerPhoneNumber { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public string PickupLocation { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public string ReturnLocation { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public DateTime PickupTime { get; set; } = DateTime.Today.AddDays(1).AddHours(9);
+		[System.ComponentModel.DataAnnotations.Required] public DateTime ReturnTime { get; set; } = DateTime.Today.AddDays(1).AddHours(11);
+	}
+
+	private sealed class InstallationQuoteDraft
+	{
+		[System.ComponentModel.DataAnnotations.Required] public string ClientName { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public string ClientPhoneNumber { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public string PropertyType { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public string SupplyType { get; set; } = string.Empty;
+	}
+}

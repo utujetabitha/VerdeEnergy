@@ -1,0 +1,80 @@
+@page "/finance"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
+@using Infrastructure.Persistence
+@using Microsoft.EntityFrameworkCore
+@using System.Globalization
+@inject OperationsService Operations
+@inject VerdeEnergyDbContext Database
+@inject ILogger<Finance> Logger
+
+<PageTitle>Finance | Verde Energy</PageTitle>
+
+@if (!string.IsNullOrWhiteSpace(loadError))
+{
+    <section class="panel page-panel">
+        <p class="form-error" role="alert">@loadError</p>
+        <p><button class="action-button" type="button" @onclick="Reload">Reload finance data</button></p>
+    </section>
+}
+else
+{
+    <div class="page-heading"><div><p class="eyebrow">Revenue control</p><h1>Finance</h1><p class="lede">Track every payment across mobility and energy services.</p></div><a class="action-button" href="@FinanceCsvDataUrl" download="verde-energy-finance.csv"><span>↓</span> Export report</a></div>
+    <section class="metric-grid finance-metrics"><div class="metric-card accent-green"><span class="metric-label">Settled</span><strong>@Operations.FormatCurrency(TotalFor("Settled").ToString("0.##", CultureInfo.InvariantCulture))</strong><small>@CountFor("Settled") transactions</small></div><div class="metric-card accent-yellow"><span class="metric-label">Awaiting settlement</span><strong>@Operations.FormatCurrency(TotalFor("Pending").ToString("0.##", CultureInfo.InvariantCulture))</strong><small>@CountFor("Pending") transactions</small></div><div class="metric-card accent-blue"><span class="metric-label">Transactions</span><strong>@transactions.Count</strong><small>All services</small></div></section>
+    <section class="panel page-panel"><div class="panel-header"><div><p class="eyebrow">Payment ledger</p><h2>Recent transactions</h2></div><span class="table-count">@transactions.Count transactions</span></div><div class="table-wrap"><table><thead><tr><th>Reference</th><th>Client</th><th>Service</th><th>Method</th><th>Amount (FRW)</th><th>Status</th></tr></thead><tbody>@if (transactions.Count == 0){<tr><td colspan="6" class="muted">No payments recorded yet.</td></tr>}@foreach (var transaction in transactions){<tr><td><strong>@transaction.PaymentReference</strong></td><td>@customerNames.GetValueOrDefault(transaction.UserId, transaction.UserId)</td><td>@transaction.ServiceType</td><td>@transaction.PaymentMethod</td><td><strong>@Operations.FormatCurrency(transaction.Amount)</strong></td><td><span class="status @transaction.TransactionStatus.ToLowerInvariant()">@transaction.TransactionStatus</span></td></tr>}</tbody></table></div></section>
+}
+
+@code {
+    private async Task Reload()
+    {
+        loadError = null;
+        await OnInitializedAsync();
+    }
+}
+
+@code {
+	private List<Transaction> transactions = [];
+	private Dictionary<string, string> customerNames = [];
+	private string FinanceCsvDataUrl => "data:text/csv;charset=utf-8," + Uri.EscapeDataString(BuildFinanceCsv());
+
+	private string? loadError;
+
+	protected override async Task OnInitializedAsync()
+	{
+		try
+		{
+			transactions = await Database.Transactions.OrderByDescending(item => item.Id).ToListAsync();
+			customerNames = await Database.Users.ToDictionaryAsync(user => user.Id, user => user.FullName);
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while loading finance data.");
+			loadError = "Could not load finance records. The database is temporarily unavailable. Refresh the page to try again.";
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while loading finance data.");
+			loadError = "Could not load finance records. Refresh the page to try again.";
+		}
+	}
+
+	private int CountFor(string status) => transactions.Count(transaction => string.Equals(transaction.TransactionStatus, status, StringComparison.OrdinalIgnoreCase));
+	private decimal TotalFor(string status) => transactions.Where(transaction => string.Equals(transaction.TransactionStatus, status, StringComparison.OrdinalIgnoreCase)).Sum(transaction => ParseAmount(transaction.Amount));
+	private static decimal ParseAmount(string value)
+	{
+		var normalized = value.Trim();
+		if (normalized.StartsWith("FRW", StringComparison.OrdinalIgnoreCase)) normalized = normalized[3..].Trim();
+		return decimal.TryParse(normalized, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount) ? amount : 0;
+	}
+
+	private string BuildFinanceCsv()
+	{
+		var rows = new List<string> { "Reference,Client,Service,Method,Amount (FRW),Status" };
+		rows.AddRange(transactions.OrderBy(item => item.Id).Select(item => string.Join(',', new[]
+		{
+			Csv(item.PaymentReference), Csv(customerNames.GetValueOrDefault(item.OwnerUserId ?? string.Empty, item.UserId)), Csv(item.ServiceType), Csv(item.PaymentMethod), Csv(item.Amount), Csv(item.TransactionStatus)
+		})));
+		return string.Join("\r\n", rows);
+	}
+
+	private static string Csv(string value) => $"\"{value.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+}

@@ -1,0 +1,460 @@
+@page "/users"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@using Infrastructure.Persistence
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@inject IServiceScopeFactory ScopeFactory
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>User Management | Verde Energy</PageTitle>
+
+<div class="page-heading">
+	<div>
+		<p class="eyebrow">Administration</p>
+		<h1>User Management</h1>
+		<p class="lede">Manage system credentials, assign Administrator or Customer roles, and onboard new users.</p>
+	</div>
+	<button class="action-button" type="button" @onclick="OpenCreateDialog">
+		<span>+</span> Add new user
+	</button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(feedbackMessage))
+{
+	<p class="@(feedbackIsError ? "form-error" : "form-success")" role="@(feedbackIsError ? "alert" : "status")">
+		@feedbackMessage
+	</p>
+}
+
+<section class="panel page-panel">
+	<div class="panel-header">
+		<div>
+			<p class="eyebrow">System directory</p>
+			<h2>Registered users</h2>
+		</div>
+		<span class="table-count">@userList.Count accounts</span>
+	</div>
+
+	<div class="table-wrap">
+		<table>
+			<thead>
+				<tr>
+					<th>Full name</th>
+					<th>Email address</th>
+					<th>Phone</th>
+					<th>Roles</th>
+					<th>Email status</th>
+					<th>Actions</th>
+				</tr>
+			</thead>
+			<tbody>
+				@if (userList.Count == 0)
+				{
+					<tr><td colspan="6" class="muted">No user accounts found.</td></tr>
+				}
+				@foreach (var u in userList)
+				{
+					<tr>
+						<td><strong>@u.FullName</strong></td>
+						<td>@u.Email</td>
+						<td>@(string.IsNullOrWhiteSpace(u.PhoneNumber) ? "-" : u.PhoneNumber)</td>
+						<td>
+							@foreach (var role in u.Roles)
+							{
+								<span class="status @(role == "Admin" ? "scheduled" : "completed")" style="margin-right: 0.25rem;">
+									@role
+								</span>
+							}
+						</td>
+						<td>
+							<span class="status @(u.EmailConfirmed ? "completed" : "pending")">
+								@(u.EmailConfirmed ? "Confirmed" : "Unconfirmed")
+							</span>
+						</td>
+						<td>
+							<div style="display: flex; gap: 0.4rem; align-items: center;">
+								@if (u.Roles.Contains("Admin"))
+								{
+									@if (u.Email != currentAdminEmail)
+									{
+										<button class="action-button ghost" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" type="button" @onclick="() => ToggleAdminRole(u, false)">
+											Remove Admin
+										</button>
+									}
+								}
+								else
+								{
+									<button class="action-button" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" type="button" @onclick="() => ToggleAdminRole(u, true)">
+										Grant Admin
+									</button>
+								}
+								<button class="action-button ghost" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" type="button" @onclick="() => OpenResetPasswordDialog(u)">
+									Reset password
+								</button>
+							</div>
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+</section>
+
+@if (showCreateDialog)
+{
+	<div class="dialog-backdrop" role="dialog" aria-modal="true">
+		<div class="dialog-panel" style="max-width: 520px; width: 100%;">
+			<div class="panel-header">
+				<div>
+					<p class="eyebrow">New account</p>
+					<h2>Add a new user</h2>
+				</div>
+				<button class="ghost-button" type="button" @onclick="CloseDialogs">&times;</button>
+			</div>
+
+			@if (!string.IsNullOrWhiteSpace(dialogError))
+			{
+				<p class="form-error" role="alert">@dialogError</p>
+			}
+
+			<form @onsubmit="CreateUserAsync" @onsubmit:preventDefault>
+				<label>
+					Full name *
+					<input @bind="newFullName" placeholder="e.g. Jean Pierre Nzeyimana" required />
+				</label>
+				<label>
+					Email address *
+					<input @bind="newEmail" type="email" placeholder="e.g. user@verdeenergy.rw" required />
+				</label>
+				<label>
+					Phone number
+					<input @bind="newPhoneNumber" type="tel" placeholder="e.g. +250 788 123 456" />
+				</label>
+				<label>
+					System role *
+					<select @bind="newRole">
+						<option value="Customer">Customer (Service booking &amp; personal tracking)</option>
+						<option value="Admin">Administrator (Full access to all operations &amp; pages)</option>
+					</select>
+				</label>
+				<label>
+					Password * (minimum 8 characters)
+					<input @bind="newPassword" type="password" placeholder="At least 8 characters with numbers & symbols" required minlength="8" />
+				</label>
+				<label>
+					Confirm password *
+					<input @bind="newConfirmPassword" type="password" placeholder="Repeat password" required minlength="8" />
+				</label>
+
+				<div style="margin-top: 1rem; display: flex; justify-content: flex-end; gap: 0.5rem;">
+					<button class="action-button ghost" type="button" @onclick="CloseDialogs">Cancel</button>
+					<button class="action-button" type="submit" disabled="@isSubmitting">
+						@(isSubmitting ? "Creating..." : "Create user ->")
+					</button>
+				</div>
+			</form>
+		</div>
+	</div>
+}
+
+@if (showResetDialog && targetUser != null)
+{
+	<div class="dialog-backdrop" role="dialog" aria-modal="true">
+		<div class="dialog-panel" style="max-width: 480px; width: 100%;">
+			<div class="panel-header">
+				<div>
+					<p class="eyebrow">Security</p>
+					<h2>Reset password for @targetUser.FullName</h2>
+				</div>
+				<button class="ghost-button" type="button" @onclick="CloseDialogs">&times;</button>
+			</div>
+
+			<p class="muted" style="margin-bottom: 1rem; font-size: 0.85rem;">
+				Enter a new temporary or permanent password for <strong>@targetUser.Email</strong>.
+			</p>
+
+			@if (!string.IsNullOrWhiteSpace(dialogError))
+			{
+				<p class="form-error" role="alert">@dialogError</p>
+			}
+
+			<form @onsubmit="ResetUserPasswordAsync" @onsubmit:preventDefault>
+				<label>
+					New password * (minimum 8 characters)
+					<input @bind="resetPassword" type="password" required minlength="8" />
+				</label>
+				<label>
+					Confirm new password *
+					<input @bind="resetConfirmPassword" type="password" required minlength="8" />
+				</label>
+
+				<div style="margin-top: 1rem; display: flex; justify-content: flex-end; gap: 0.5rem;">
+					<button class="action-button ghost" type="button" @onclick="CloseDialogs">Cancel</button>
+					<button class="action-button" type="submit" disabled="@isSubmitting">
+						@(isSubmitting ? "Updating..." : "Update password")
+					</button>
+				</div>
+			</form>
+		</div>
+	</div>
+}
+
+@code {
+	private List<UserViewModel> userList = [];
+	private string currentAdminEmail = string.Empty;
+
+	private bool showCreateDialog;
+	private bool showResetDialog;
+	private bool isSubmitting;
+
+	private string newFullName = string.Empty;
+	private string newEmail = string.Empty;
+	private string newPhoneNumber = string.Empty;
+	private string newRole = "Customer";
+	private string newPassword = string.Empty;
+	private string newConfirmPassword = string.Empty;
+
+	private UserViewModel? targetUser;
+	private string resetPassword = string.Empty;
+	private string resetConfirmPassword = string.Empty;
+
+	private string? feedbackMessage;
+	private bool feedbackIsError;
+	private string? dialogError;
+
+	protected override async Task OnInitializedAsync()
+	{
+		var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+		currentAdminEmail = authState.User.Identity?.Name ?? string.Empty;
+		await LoadUsersAsync();
+	}
+
+	private async Task LoadUsersAsync()
+	{
+		using var scope = ScopeFactory.CreateScope();
+		var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+		var db = scope.ServiceProvider.GetRequiredService<VerdeEnergyDbContext>();
+
+		var users = await db.Users.AsNoTracking().ToListAsync();
+		var list = new List<UserViewModel>();
+
+		foreach (var u in users)
+		{
+			var roles = await userManager.GetRolesAsync(u);
+			list.Add(new UserViewModel
+			{
+				Id = u.Id,
+				FullName = u.FullName,
+				Email = u.Email ?? string.Empty,
+				PhoneNumber = u.PhoneNumber,
+				EmailConfirmed = u.EmailConfirmed,
+				Roles = roles.ToList()
+			});
+		}
+
+		userList = list.OrderByDescending(u => u.Roles.Contains("Admin")).ThenBy(u => u.FullName).ToList();
+	}
+
+	private void OpenCreateDialog()
+	{
+		newFullName = string.Empty;
+		newEmail = string.Empty;
+		newPhoneNumber = string.Empty;
+		newRole = "Customer";
+		newPassword = string.Empty;
+		newConfirmPassword = string.Empty;
+		dialogError = null;
+		showCreateDialog = true;
+	}
+
+	private void OpenResetPasswordDialog(UserViewModel u)
+	{
+		targetUser = u;
+		resetPassword = string.Empty;
+		resetConfirmPassword = string.Empty;
+		dialogError = null;
+		showResetDialog = true;
+	}
+
+	private void CloseDialogs()
+	{
+		showCreateDialog = false;
+		showResetDialog = false;
+		dialogError = null;
+	}
+
+	private async Task CreateUserAsync()
+	{
+		if (string.IsNullOrWhiteSpace(newFullName) || string.IsNullOrWhiteSpace(newEmail) || string.IsNullOrWhiteSpace(newPassword))
+		{
+			dialogError = "Please fill in all required fields.";
+			return;
+		}
+
+		if (newPassword != newConfirmPassword)
+		{
+			dialogError = "Passwords do not match.";
+			return;
+		}
+
+		isSubmitting = true;
+		dialogError = null;
+
+		try
+		{
+			using var scope = ScopeFactory.CreateScope();
+			var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+			var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+
+			var existing = await userManager.FindByEmailAsync(newEmail.Trim());
+			if (existing != null)
+			{
+				dialogError = $"A user with email '{newEmail.Trim()}' already exists.";
+				isSubmitting = false;
+				return;
+			}
+
+			var user = new ApplicationUser
+			{
+				UserName = newEmail.Trim(),
+				Email = newEmail.Trim(),
+				FullName = newFullName.Trim(),
+				PhoneNumber = string.IsNullOrWhiteSpace(newPhoneNumber) ? null : newPhoneNumber.Trim(),
+				EmailConfirmed = true
+			};
+
+			var createResult = await userManager.CreateAsync(user, newPassword);
+			if (!createResult.Succeeded)
+			{
+				dialogError = string.Join(" ", createResult.Errors.Select(e => e.Description));
+				isSubmitting = false;
+				return;
+			}
+
+			// Ensure role exists
+			if (!await roleManager.RoleExistsAsync(newRole))
+			{
+				await roleManager.CreateAsync(new IdentityRole(newRole));
+			}
+
+			await userManager.AddToRoleAsync(user, newRole);
+
+			// If admin, also add customer role for full dual capability
+			if (newRole == "Admin" && !await userManager.IsInRoleAsync(user, "Customer"))
+			{
+				await userManager.AddToRoleAsync(user, "Customer");
+			}
+
+			showCreateDialog = false;
+			feedbackMessage = $"User '{user.FullName}' ({user.Email}) was created successfully with role '{newRole}'.";
+			feedbackIsError = false;
+			await LoadUsersAsync();
+		}
+		catch (Exception ex)
+		{
+			dialogError = "Failed to create user: " + ex.Message;
+		}
+		finally
+		{
+			isSubmitting = false;
+		}
+	}
+
+	private async Task ToggleAdminRole(UserViewModel u, bool makeAdmin)
+	{
+		try
+		{
+			using var scope = ScopeFactory.CreateScope();
+			var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+			var user = await userManager.FindByIdAsync(u.Id);
+			if (user == null) return;
+
+			if (makeAdmin)
+			{
+				if (!await userManager.IsInRoleAsync(user, "Admin"))
+				{
+					await userManager.AddToRoleAsync(user, "Admin");
+				}
+				feedbackMessage = $"Granted Administrator privileges to '{user.FullName}'.";
+			}
+			else
+			{
+				if (await userManager.IsInRoleAsync(user, "Admin"))
+				{
+					await userManager.RemoveFromRoleAsync(user, "Admin");
+				}
+				feedbackMessage = $"Removed Administrator privileges from '{user.FullName}'.";
+			}
+
+			feedbackIsError = false;
+			await LoadUsersAsync();
+		}
+		catch (Exception ex)
+		{
+			feedbackMessage = "Error updating user role: " + ex.Message;
+			feedbackIsError = true;
+		}
+	}
+
+	private async Task ResetUserPasswordAsync()
+	{
+		if (targetUser == null) return;
+		if (string.IsNullOrWhiteSpace(resetPassword) || resetPassword != resetConfirmPassword)
+		{
+			dialogError = "Passwords do not match or are empty.";
+			return;
+		}
+
+		isSubmitting = true;
+		dialogError = null;
+
+		try
+		{
+			using var scope = ScopeFactory.CreateScope();
+			var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+			var user = await userManager.FindByIdAsync(targetUser.Id);
+			if (user == null)
+			{
+				dialogError = "User not found.";
+				isSubmitting = false;
+				return;
+			}
+
+			var token = await userManager.GeneratePasswordResetTokenAsync(user);
+			var result = await userManager.ResetPasswordAsync(user, token, resetPassword);
+			if (!result.Succeeded)
+			{
+				dialogError = string.Join(" ", result.Errors.Select(e => e.Description));
+				isSubmitting = false;
+				return;
+			}
+
+			// Clear any lockout
+			await userManager.SetLockoutEndDateAsync(user, null);
+			await userManager.ResetAccessFailedCountAsync(user);
+
+			showResetDialog = false;
+			feedbackMessage = $"Password for '{user.FullName}' ({user.Email}) was reset successfully.";
+			feedbackIsError = false;
+		}
+		catch (Exception ex)
+		{
+			dialogError = "Failed to reset password: " + ex.Message;
+		}
+		finally
+		{
+			isSubmitting = false;
+		}
+	}
+
+	private sealed class UserViewModel
+	{
+		public string Id { get; set; } = string.Empty;
+		public string FullName { get; set; } = string.Empty;
+		public string Email { get; set; } = string.Empty;
+		public string? PhoneNumber { get; set; }
+		public bool EmailConfirmed { get; set; }
+		public List<string> Roles { get; set; } = [];
+	}
+}

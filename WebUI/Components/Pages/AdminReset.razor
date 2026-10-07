@@ -1,0 +1,81 @@
+@page "/admin-reset"
+@layout PublicLayout
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@inherits AuthPageBase
+
+<PageTitle>Admin Password Reset | Verde Energy</PageTitle>
+
+@if (!_tokenValid)
+{
+	<main class="auth-page">
+		<a href="/" class="request-back">&lt; Verde Energy</a>
+		<h1>Not Found</h1>
+		<p class="auth-lede">The page you're looking for doesn't exist.</p>
+	</main>
+}
+else if (_resetComplete)
+{
+	<main class="auth-page">
+		<a href="/" class="request-back">&lt; Verde Energy</a>
+		<p class="public-eyebrow">Admin password reset</p>
+		<h1>Password updated ✓</h1>
+		<p class="auth-lede">
+			Your admin password has been changed successfully.
+			You can now <a href="/login">sign in</a> with your new password.
+		</p>
+		<p class="auth-hint">
+			<strong>Important:</strong> For security, update the <code>InitialAdmin:Password</code> value in your
+			<code>appsettings.json</code> to match your new password, then restart the app.
+			Otherwise the bootstrap process will overwrite it on next startup.
+		</p>
+		<a class="action-button" href="/login">Sign in <span>-&gt;</span></a>
+	</main>
+}
+else
+{
+	<main class="auth-page">
+		<a href="/" class="request-back">&lt; Verde Energy</a>
+		<p class="public-eyebrow">Admin password reset</p>
+		<h1>Reset your admin password</h1>
+		<p class="auth-lede">Enter a new password for <strong>@_adminEmail</strong>.</p>
+		@if (QueryValue("error") is { Length: > 0 } error) { <p class="auth-error" role="alert">@error</p> }
+		<form class="auth-form" action="/auth/admin-reset" method="post" data-enhance="false">
+			<input type="hidden" name="__RequestVerificationToken" value="@RequestVerificationToken" />
+			<input type="hidden" name="token" value="@QueryValue("token")" />
+			<label>New password<input name="newPassword" type="password" autocomplete="new-password" placeholder="Min 8 chars, upper + lower + digit + symbol" required minlength="8" /></label>
+			<label>Confirm new password<input name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat your new password" required minlength="8" /></label>
+			<button class="action-button" type="submit">Reset password <span>-&gt;</span></button>
+		</form>
+	</main>
+}
+
+@code {
+	[Inject] private IConfiguration Configuration { get; set; } = default!;
+
+	private bool _tokenValid;
+	private bool _resetComplete;
+	private string _adminEmail = "";
+
+	protected override void OnInitialized()
+	{
+		base.OnInitialized();
+
+		var expectedToken = Configuration["AdminReset:Token"];
+		if (string.IsNullOrWhiteSpace(expectedToken))
+		{
+			// No token configured — page is effectively disabled
+			_tokenValid = false;
+			return;
+		}
+
+		var providedToken = QueryValue("token");
+		_tokenValid = string.Equals(providedToken, expectedToken, StringComparison.Ordinal);
+
+		if (_tokenValid)
+		{
+			_adminEmail = Configuration["InitialAdmin:Email"] ?? "utujetabitha@gmail.com";
+		}
+
+		_resetComplete = QueryValue("success") == "1" && _tokenValid;
+	}
+}

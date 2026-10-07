@@ -1,0 +1,28 @@
+@page "/login"
+@layout PublicLayout
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@inherits AuthPageBase
+
+<PageTitle>Sign in | Verde Energy</PageTitle>
+
+<main class="auth-page">
+	<a href="/" class="request-back">&lt; Verde Energy</a>
+	<p class="public-eyebrow">Verde Energy account</p>
+	<h1>Welcome back</h1>
+	<p class="auth-lede">Sign in to see your own bookings and payment status.</p>
+	<p class="auth-hint">
+		<strong>Verde Energy administrator?</strong>
+		Use <em>utujetabitha@gmail.com</em> (the email configured on the Operations server) to sign in to the internal desk.
+		If you need a password reset or to create an additional admin, contact the Verde Energy system administrator.
+	</p>
+	@if (QueryValue("error") is { Length: > 0 } error) { <p class="auth-error" role="alert">@error</p> }
+	<form class="auth-form" action="/auth/login" method="post" data-enhance="false">
+		<input type="hidden" name="__RequestVerificationToken" value="@RequestVerificationToken" />
+		<input type="hidden" name="returnUrl" value="@QueryValue("returnUrl")" />
+		<label>Email<input name="email" type="email" autocomplete="username" placeholder="name@example.com" required /></label>
+		<label>Password<input name="password" type="password" autocomplete="current-password" placeholder="Your password" required /></label>
+		<label class="auth-checkbox"><input name="rememberMe" type="checkbox" value="true" />Keep me signed in</label>
+		<button class="action-button" type="submit">Sign in <span>-&gt;</span></button>
+	</form>
+	<p class="auth-switch">New to Verde Energy? <a href="/register">Create an account</a></p>
+</main>

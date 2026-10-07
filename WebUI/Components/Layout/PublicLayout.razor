@@ -1,0 +1,70 @@
+@inherits LayoutComponentBase
+@inject ILogger<PublicLayout> Logger
+@inject NavigationManager Navigation
+@using VerdeEnergy.WebUI.Components.Layout
+
+<LoggingErrorBoundary OnError="HandleError">
+    <ChildContent>
+        <div class="account-header">
+            <a class="account-brand" href="/">VERDE ENERGY</a>
+            <nav aria-label="Account navigation">
+                <AuthorizeView>
+                    <Authorized>
+                        <AuthorizeView Roles="Admin" Context="adminContext">
+                            <Authorized>
+                                <a href="/operations" class="admin-nav-link" style="color: #4ade80; font-weight: 600;">Operations Desk</a>
+                            </Authorized>
+                        </AuthorizeView>
+                        <a href="/book-drive">Book a service</a>
+                        <a href="/track">Track request</a>
+                        <a href="/account">My account</a>
+                        <a href="/logout">Sign out</a>
+                    </Authorized>
+                    <NotAuthorized>
+                        <a href="/login">Sign in</a>
+                        <a href="/register">Create account</a>
+                    </NotAuthorized>
+                </AuthorizeView>
+            </nav>
+        </div>
+        @Body
+    </ChildContent>
+    <ErrorContent Context="exception">
+        <div class="account-header">
+            <a class="account-brand" href="/">VERDE ENERGY</a>
+            <nav aria-label="Account navigation">
+                <AuthorizeView>
+                    <NotAuthorized>
+                        <a href="/login">Sign in</a>
+                        <a href="/register">Create account</a>
+                    </NotAuthorized>
+                </AuthorizeView>
+            </nav>
+        </div>
+        <section class="panel page-panel" style="margin: 2rem auto; max-width: 640px;">
+            <p class="eyebrow">System</p>
+            <h1>Something went wrong</h1>
+            <p class="lede">We hit an unexpected error while loading this page. No data has been lost.</p>
+            <p class="form-error" role="alert">@errorMessage</p>
+            <p>
+                <button class="action-button" type="button" @onclick="Recover">Try again</button>
+                <a class="action-button ghost" href="/">Return to home</a>
+            </p>
+        </section>
+    </ErrorContent>
+</LoggingErrorBoundary>
+
+@code {
+    private string errorMessage = "A temporary error occurred in this view. Use the action below to reload.";
+
+    private void HandleError(Exception exception)
+    {
+        errorMessage = "A temporary error occurred in this view. Use the action below to reload the screen.";
+        Logger.LogError(exception, "Unhandled component exception in PublicLayout path: {Path}", Navigation.Uri);
+    }
+
+    private void Recover()
+    {
+        Navigation.NavigateTo(Navigation.Uri, forceLoad: false);
+    }
+}

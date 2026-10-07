@@ -1,0 +1,80 @@
+@page "/"
+@rendermode InteractiveServer
+@inject EmailSender EmailSender
+@inject ILogger<Home> Logger
+
+<PageTitle>Verde Energy | Powering Green Energy, Kigali</PageTitle>
+
+@code {
+    private bool menuOpen;
+    private string selectedInterest = "Home charging installation";
+    private string name = string.Empty;
+    private string email = string.Empty;
+    private string message = string.Empty;
+    private string statusMessage = string.Empty;
+    private bool statusIsError;
+
+    private async Task SubmitMessage()
+    {
+        try
+        {
+            await EmailSender.SendContactMessageAsync(name, email, selectedInterest, message);
+            statusMessage = "Thanks - your message has been sent successfully. We will be in touch shortly.";
+            statusIsError = false;
+            name = string.Empty;
+            email = string.Empty;
+            message = string.Empty;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "Contact form submission failed for sender {Email}: configuration issue.", email);
+            statusMessage = ex.Message;
+            statusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Contact form submission failed for sender {Email}.", email);
+            statusMessage = "We could not deliver your message right now. Please try again later or call Verde Energy directly.";
+            statusIsError = true;
+        }
+    }
+}
+
+<div class="public-site">
+    <header class="public-header">
+        <nav class="public-nav" aria-label="Main navigation">
+            <a class="public-brand" href="#top" aria-label="Verde Energy home"><img src="images/verde-logo.jpeg" alt="Verde Energy logo" /><span>VERDE ENERGY</span></a>
+            <button class="mobile-menu-button" type="button" aria-label="Toggle menu" @onclick="() => menuOpen = !menuOpen">@(menuOpen ? "Close" : "Menu")</button>
+            <div class="public-navlinks @(menuOpen ? "open" : "")"><a href="#about" @onclick="() => menuOpen = false">About</a><a href="#services" @onclick="() => menuOpen = false">Services</a><a href="#verde-drive" @onclick="() => menuOpen = false">Verde Drive</a><a href="#why" @onclick="() => menuOpen = false">Why Verde</a><a href="#roadmap" @onclick="() => menuOpen = false">Roadmap</a><a href="#contact" @onclick="() => menuOpen = false">Get in touch</a><a href="/track" @onclick="() => menuOpen = false">Track request</a></div>
+            <AuthorizeView>
+                <Authorized>
+                    <AuthorizeView Roles="Admin" Context="adminContext">
+                        <Authorized><a class="public-nav-cta" href="/operations" style="background:#10b981;margin-right:0.5rem;">Operations</a></Authorized>
+                    </AuthorizeView>
+                    <a class="public-nav-cta" href="/account">My account</a>
+                </Authorized>
+                <NotAuthorized><a class="public-nav-cta" href="/login">Sign in</a></NotAuthorized>
+            </AuthorizeView>
+        </nav>
+    </header>
+
+    <main id="top">
+        <section class="public-hero public-dark"><div class="public-wrap public-hero-grid"><div class="public-hero-copy"><p class="public-eyebrow">Kigali, Rwanda - Electric Mobility &amp; Sustainable Energy</p><h1>You focus on your day.<br /><em>We charge your car.</em></h1><p class="public-lede">Verde Energy builds the charging infrastructure, energy expertise, and on-demand service that Rwanda's shift to electric mobility needs.</p><div class="public-actions"><a class="public-button primary" href="#verde-drive">See how Verde Drive works <span>-&gt;</span></a><a class="public-button ghost" href="/book-drive">Make a request <span>-&gt;</span></a></div></div><div class="meter-card"><div class="meter-top"><span>Verde Hub - Bay 02</span><strong>DC - CCS2 - 60kW</strong></div><div class="meter-visual"><div class="meter-circle"><strong>80%</strong><span>STATE OF CHARGE</span></div></div><div class="meter-row"><span>Target</span><strong>80% SoC - optimal window</strong></div><div class="meter-row"><span>Est. time to target</span><strong>~ 32 min</strong></div><div class="meter-row"><span>Energy delivered</span><strong>30 kWh</strong></div><p class="meter-note">Charging to 80% instead of 100% cuts hub time by up to half - the decision that makes Verde Drive work at scale.</p></div></div><a class="scroll-cue" href="#about">SCROLL <span></span></a></section>
+
+        <section id="about" class="public-section"><div class="public-wrap"><div class="public-section-heading"><p class="public-eyebrow">About Verde Energy</p><h2>More than a charging company - a clean energy ecosystem.</h2><p>Verde Energy combines charging infrastructure, an on-demand logistics-based charging service, professional energy consulting, and environmental management into one integrated business.</p></div><div class="pillar-grid"><article><span>01</span><h3>Renewable Energy Solutions</h3><p>EV charging infrastructure, energy storage systems, solar PV integration, energy efficiency consulting, and hybrid systems.</p></article><article><span>02</span><h3>Sustainable Development</h3><p>Community electrification, green technology initiatives, climate change mitigation, and sustainable infrastructure development.</p></article><article><span>03</span><h3>Environmental Management</h3><p>Environmental impact assessments, energy audits, carbon footprint reduction, waste management, and sustainability consulting.</p></article></div><div class="public-photo-strip"><img src="images/verde-photo2.jpeg" alt="Verde Energy green energy identity" /><div><p class="public-eyebrow">Powering green energy</p><h3>Infrastructure with a human direction.</h3><p>From the first installation to the next regional hub, every Verde project is designed to make cleaner choices easier to adopt.</p></div></div></div></section>
+
+        <div class="audience-strip"><div><span>EV Owners</span><span>Homeowners</span><span>Corporate Offices</span><span>Hotels</span><span>Shopping Centres</span><span>Fleet Operators</span><span>Government &amp; NGOs</span></div></div>
+
+        <section id="services" class="public-section services-section"><div class="public-wrap"><div class="public-section-heading"><p class="public-eyebrow">What We Do</p><h2>Five services, one integrated charging and energy business.</h2><p>From a single home charger to a full commercial fleet program, Verde Energy meets you wherever your electric mobility journey starts.</p></div><div class="service-list"><article><span>01</span><div><h3>Home Charging Installation</h3><b>Level 2 AC - 7.4-11 kW - overnight charging at your residence</b><p>Site assessment, supply and installation of a smart Type 2 charging unit, dedicated circuit protection, maintenance, and warranty support.</p></div></article><article><span>02</span><div><h3>Commercial &amp; Office Charging</h3><b>Level 2 AC - 11-22 kW - multi-unit installations for businesses</b><p>Multi-bay charging design and installation with fleet load balancing, monitoring, billing, and ongoing maintenance.</p></div></article><article id="verde-drive" class="flagship"><span>03</span><div><mark>FLAGSHIP SERVICE</mark><h3>Verde Drive - Pick-Up &amp; Return Charging</h3><b>DC fast charging - 60-120 kW - central Kigali hub</b><p>Verde Drive brings the charge to the customer instead of the other way around. Request by call, WhatsApp, or app, then track the vehicle from handover to return.</p></div><img src="images/verde-photo1.jpeg" alt="Verde Energy charging service" /></article><article><span>04</span><div><h3>Sustainable Energy Solutions</h3><p>Energy efficiency projects, renewable energy development, solar PV design, storage solutions, community electrification, and green technology implementation.</p></div></article><article><span>05</span><div><h3>Energy Management &amp; Consultancy</h3><p>Energy audits, carbon footprint assessment, sustainability consulting, feasibility studies, and technical project supervision.</p></div></article></div></div></section>
+
+        <section class="public-dark drive-section"><div class="public-wrap"><div class="public-section-heading"><p class="public-eyebrow">How Verde Drive Works</p><h2>Eight steps between "I need a charge" and a full battery.</h2><p>Every trip is tracked end to end - from your first message to a fully charged car back at your door.</p></div><div class="drive-grid">@foreach (var step in new[] { ("01", "Request", "Contact Verde via call, WhatsApp, or the app."), ("02", "Dispatch", "The nearest available Verde driver is assigned."), ("03", "Pick-up", "Vehicle condition is documented at handover."), ("04", "Transit", "The vehicle travels to the central charging hub."), ("05", "Charging", "DC fast charging is monitored to 80% SoC."), ("06", "Alert", "The customer receives a completion notification."), ("07", "Return", "The charged vehicle returns to the customer."), ("08", "Payment", "Pay by mobile money, card, or subscription.") }) {<article><span>@step.Item1</span><h3>@step.Item2</h3><p>@step.Item3</p></article>}</div><div class="soc-strip"><p class="public-eyebrow">Why we charge to 80%, not 100%</p><p>Charging speed is not linear - the last 20% takes as long as the first 80% combined. Stopping at 80% cuts hub time by 40-50% while retaining most daily range.</p><div class="soc-bars">@foreach (var height in new[] { 35, 48, 60, 78, 92, 100, 96, 80, 60, 40, 28, 18, 12, 8 }) {<i style="height:@($"{height}%")"></i>}</div><div class="soc-labels"><span>0%</span><span>20%</span><span>50%</span><span>80%</span><span>100%</span></div></div></div></section>
+
+        <section id="why" class="public-section"><div class="public-wrap"><div class="public-section-heading"><p class="public-eyebrow">Why Verde Energy</p><h2>Built by an engineer, structured to be hard to copy.</h2></div><div class="why-grid">@foreach (var reason in new[] { ("First-mover innovation", "Verde Drive is creating a new category for Kigali EV owners."), ("Engineering expertise", "Hands-on EV systems and electrical installation experience."), ("Integrated ecosystem", "Home, commercial, and on-demand charging in one offering."), ("Sustainability positioning", "Clean energy values aligned with Rwanda's green growth priorities."), ("Scalable hub model", "A growing customer base without proportional infrastructure cost."), ("Diversified revenue", "Installation, per-use, subscription, corporate, and consulting streams.") }) {<article><h3>@reason.Item1</h3><p>@reason.Item2</p></article>}</div></div></section>
+
+        <section id="roadmap" class="public-section forest-section"><div class="public-wrap"><div class="public-section-heading"><p class="public-eyebrow">Where We're Headed</p><h2>From Kigali's first charging hub to an East African network.</h2></div><div class="roadmap">@foreach (var phase in new[] { ("Phase 01", "Foundation", "Establish the central hub, train the first driver team, and launch booking."), ("Phase 02", "Market entry", "Launch the mobile app, sign commercial clients, and grow corporate outreach."), ("Phase 03", "Scale up", "Expand hub capacity and launch corporate subscription plans."), ("Phase 04", "Regional growth", "Expand to secondary Rwandan cities and explore Uganda and Kenya.") }) {<article><span>@phase.Item1</span><div><h3>@phase.Item2</h3><p>@phase.Item3</p></div></article>}</div></div></section>
+
+        <section id="contact" class="public-section contact-section"><div class="public-wrap contact-grid"><div><p class="public-eyebrow">Get In Touch</p><h2>Let's build Kigali's clean mobility future together.</h2><p>Whether you are an EV owner, a business exploring charging, or a partner interested in Rwanda's electric mobility transition - we'd like to hear from you.</p><div class="contact-line"><span>Location</span><strong>Kigali, Rwanda</strong></div><div class="contact-line"><span>Focus</span><strong>Electric Mobility - Energy Management - Sustainability</strong></div></div><EditForm Model="this" OnValidSubmit="SubmitMessage"><DataAnnotationsValidator /><div class="form-grid"><label>Name<input @bind="name" required placeholder="Your name" /></label><label>Email<input type="email" @bind="email" required placeholder="you@example.com" /></label><label>I'm interested in<select @bind="selectedInterest"><option>Home charging installation</option><option>Commercial charging installation</option><option>Verde Drive</option><option>Energy consulting &amp; sustainability</option><option>Partnership / investment</option></select></label><label>Message<textarea @bind="message" placeholder="Tell us a bit about what you need" required></textarea></label></div><button type="submit">Send message</button>@if (!string.IsNullOrWhiteSpace(statusMessage)){<p class="@(statusIsError ? "form-error" : "form-success")" role="@(statusIsError ? "alert" : "status")">@statusMessage</p>}</EditForm></div></section>
+    </main>
+
+    <footer class="public-footer"><div class="public-wrap"><div><strong>VERDE ENERGY</strong><span>Powering Green Energy - Kigali, Rwanda</span></div><small>2026 Verde Energy Limited. All rights reserved.</small></div></footer>
+</div>

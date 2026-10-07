@@ -1,0 +1,824 @@
+@page "/operations"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject OperationsService Data
+@inject SmsSender SmsSender
+@inject ILogger<Operations> Logger
+@using System.Globalization
+@using Microsoft.EntityFrameworkCore
+@using Infrastructure.Persistence
+@inject VerdeEnergyDbContext Database
+
+<PageTitle>Operations | Verde Energy</PageTitle>
+
+<div class="page-heading">
+	<div><p class="eyebrow">Mobility control</p><h1>Operations</h1><p class="lede">Coordinate trips and monitor energy across the network.</p></div>
+	<div style="display: flex; gap: 0.5rem; align-items: center;">
+		<a class="action-button ghost" href="/users">Manage users</a>
+		<button class="action-button" type="button" @onclick="OpenDialog"><span>+</span> New trip request</button>
+	</div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(feedback))
+{
+	<p class="@(feedbackIsError ? "form-error" : "form-success")" role="@(feedbackIsError ? "alert" : "status")">@feedback</p>
+}
+
+<section class="panel page-panel">
+	<div class="panel-header"><div><p class="eyebrow">Trip requests</p><h2>Upcoming movement</h2></div><span class="table-count">@Data.Trips.Count requests</span></div>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Request</th><th>Vehicle</th><th>Route &amp; station</th><th>Schedule</th><th>Driver</th><th>Payment</th><th>Handover condition</th><th>Status</th><th>Next step</th></tr></thead>
+			<tbody>
+				@if (Data.Trips.Count == 0)
+				{
+					<tr><td colspan="9" class="muted">No trip requests yet.</td></tr>
+				}
+				@foreach (var trip in Data.Trips)
+				{
+					var vehicle = Data.Vehicles.FirstOrDefault(item => item.Id == trip.VehicleId);
+					<tr>
+						<td><strong>TRP-@trip.Id.ToString("000")</strong><br /><span class="muted">@trip.CustomerName<br />@trip.ServiceType</span></td>
+						<td>@(vehicle is null ? $"{trip.VehicleDescription} ({trip.LicensePlate})" : $"{vehicle.MakeModel} ({vehicle.LicensePlate})")</td>
+						<td>@trip.PickupLocation <span class="muted">-&gt;</span> @trip.ReturnLocation<br /><span class="muted">@trip.StationName</span></td>
+						<td>@trip.PickupTime.ToString("dd MMM, HH:mm")</td>
+						<td>@(trip.ServiceType == "Self-drive" ? "Customer arrival" : trip.AssignedDriverName)</td>
+						<td>@trip.PaymentStatus<br />@if (!string.IsNullOrWhiteSpace(trip.PaymentReference)){<span class="muted">@trip.PaymentReference</span>}@if (!string.IsNullOrWhiteSpace(trip.PaymentProofStorageName)){<br /><a href="/admin/payment-proofs/@trip.Id">View receipt</a>}</td>
+						<td>@if (trip.Status == "Scheduled") { <textarea aria-label="Pre-trip condition notes" placeholder="Record existing damage and vehicle condition" @bind="trip.HandoverConditionNotes"></textarea> } else { @trip.HandoverConditionNotes }</td>
+						<td><span class="status @trip.Status.ToLowerInvariant().Replace(" ", "-")">@trip.Status</span></td>
+						<td>
+							@if (trip.Status == "Awaiting payment verification")
+							{
+								<button class="action-button" type="button" @onclick="() => VerifyTripPayment(trip)">Verify payment</button>
+							}
+							else if (trip.Status == "Payment due at station")
+							{
+								<button class="action-button" type="button" @onclick="() => ConfirmArrivalPayment(trip)">Confirm payment at station</button>
+							}
+							else if (trip.Status == "Requested" && trip.ServiceType == "Self-drive")
+							{
+								<button class="action-button" type="button" @onclick="() => ConfirmSelfDriveBooking(trip)">Confirm station booking</button>
+							}
+							else if (trip.Status == "Requested")
+							{
+								<button class="action-button" type="button" @onclick="() => OpenAssignmentDialog(trip)">Assign driver</button>
+							}
+							else if (trip.Status == "Scheduled")
+							{
+								<button class="action-button" type="button" @onclick="() => RecordPickup(trip)">@(trip.ServiceType == "Self-drive" ? "Record arrival & inspection" : "Record inspection & pickup")</button>
+							}
+							else if (trip.Status is "Picked Up" or "At hub")
+							{
+								<button class="action-button" type="button" @onclick="() => OpenChargingDialog(trip)">Start charging</button>
+							}
+							else if (trip.Status == "Charging")
+							{
+								<button class="action-button" type="button" disabled="@(sendingTripId == trip.Id)" @onclick="() => OpenChargeCompletionDialog(trip, vehicle)">Confirm charging complete</button>
+							}
+							else if (trip.Status == "Charging complete")
+							{
+								<button class="action-button" type="button" @onclick='() => ChangeTripStatus(trip, "Charging complete", "Returning")'>Mark vehicle returning</button>
+							}
+							else if (trip.Status == "Returning")
+							{
+								<button class="action-button" type="button" disabled="@(sendingTripId == trip.Id)" @onclick="() => ConfirmVehicleReturnedAsync(trip, vehicle)">Confirm vehicle returned</button>
+							}
+							else
+							{
+								<span class="muted">Trip complete</span>
+							}
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+</section>
+
+<section class="panel page-panel">
+	<div class="panel-header"><div><p class="eyebrow">Charging activity</p><h2>Vehicles at the hub</h2></div><span class="table-count">@Data.Trips.Count(trip => trip.Status == "Charging") charging</span></div>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Trip</th><th>Station / bay</th><th>Vehicle</th><th>Owner</th><th>Driver</th><th>Scheduled pickup</th><th>Battery</th><th>Status</th><th></th></tr></thead>
+			<tbody>
+				@if (!Data.Trips.Any(trip => trip.Status == "Charging"))
+				{
+					<tr><td colspan="9" class="muted">No vehicles are currently charging.</td></tr>
+				}
+				@foreach (var trip in Data.Trips.Where(trip => trip.Status == "Charging"))
+				{
+					var vehicle = Data.Vehicles.FirstOrDefault(item => item.Id == trip.VehicleId);
+					var session = Data.HubSessions.FirstOrDefault(item => item.TripId == trip.Id);
+					<tr><td>TRP-@trip.Id.ToString("000")</td><td>@(session is null ? trip.StationName : $"{session.StationName} / Bay {session.HubBayId:00}")</td><td>@(vehicle is null ? $"{trip.VehicleDescription} ({trip.LicensePlate})" : $"{vehicle.MakeModel} ({vehicle.LicensePlate})")</td><td>@(vehicle?.OwnerName ?? trip.CustomerName)</td><td>@trip.AssignedDriverName</td><td>@trip.PickupTime.ToString("dd MMM, HH:mm")</td><td>@(session is null ? "Not recorded" : $"{session.InitialChargeLevel} -> {session.CurrentChargeLevel}")</td><td><span class="status in-progress">Charging</span></td><td>@if (session is not null){<button class="action-button" type="button" @onclick="() => OpenProgressDialog(trip, session)">Update SoC</button>}</td></tr>
+				}
+			</tbody>
+		</table>
+	</div>
+</section>
+
+@if (Data.PendingSms.Count > 0)
+{
+	<section class="panel page-panel">
+		<div class="panel-header"><div><p class="eyebrow">Message delivery</p><h2>SMS pending</h2></div><span class="table-count">@Data.PendingSms.Count messages</span></div>
+		<div class="table-wrap">
+			<table>
+				<thead><tr><th>Trip</th><th>Recipient</th><th>Phone</th><th>Message</th><th>Delivery issue</th><th></th></tr></thead>
+				<tbody>
+					@foreach (var pendingSms in Data.PendingSms)
+					{
+						<tr>
+							<td>TRP-@pendingSms.TripId.ToString("000")</td><td>@pendingSms.RecipientName</td><td>@pendingSms.PhoneNumber</td><td>@pendingSms.Message</td><td>@pendingSms.LastError</td>
+							<td><button class="action-button" type="button" disabled="@(retryingSmsId == pendingSms.Id)" @onclick="() => RetryPendingSmsAsync(pendingSms)">Retry</button></td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</section>
+}
+
+@if (isDialogOpen)
+{
+	<div class="dialog-backdrop" @onclick="CloseDialog">
+		<dialog open class="form-dialog" @onclick:stopPropagation="true">
+			<div class="dialog-header"><div><p class="eyebrow">Mobility control</p><h2>New trip request</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseDialog">×</button></div>
+			@if (Data.Vehicles.Count == 0)
+			{
+				<p class="muted">Add a vehicle with the owner's phone number before scheduling a trip.</p>
+			}
+			<EditForm Model="tripDraft" OnValidSubmit="SaveTrip">
+				<DataAnnotationsValidator />
+				<div class="form-grid">
+					<label>Fleet vehicle<select @bind="tripDraft.VehicleId" required><option value="">Select a vehicle</option>@foreach (var vehicle in Data.Vehicles){<option value="@vehicle.Id">@vehicle.MakeModel - @vehicle.LicensePlate (@vehicle.OwnerName)</option>}</select></label>
+					<label>Customer name<input @bind="tripDraft.CustomerName" required /></label>
+					<label>Customer phone<input type="tel" @bind="tripDraft.CustomerPhoneNumber" required /></label>
+					<label>Driver name<input @bind="tripDraft.AssignedDriverName" required /></label>
+					<label>Driver phone<input type="tel" @bind="tripDraft.DriverPhoneNumber" required /></label>
+					<label>Pickup location<input @bind="tripDraft.PickupLocation" required /></label>
+					<label>Return location<input @bind="tripDraft.ReturnLocation" required /></label>
+					<label>Pickup time<input type="datetime-local" @bind="tripDraft.PickupTime" required /></label>
+					<label>Return time<input type="datetime-local" @bind="tripDraft.ReturnTime" required /></label>
+				</div>
+				<div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseDialog">Cancel</button><button class="action-button" type="submit" disabled="@(Data.Vehicles.Count == 0)">Create request</button></div>
+			</EditForm>
+		</dialog>
+	</div>
+}
+
+@if (assignmentTrip is not null)
+{
+	<div class="dialog-backdrop" @onclick="CloseAssignmentDialog">
+		<dialog open class="form-dialog" @onclick:stopPropagation="true">
+			<div class="dialog-header"><div><p class="eyebrow">Dispatch</p><h2>Assign trip TRP-@assignmentTrip.Id.ToString("000")</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseAssignmentDialog">×</button></div>
+			<EditForm Model="assignmentDraft" OnValidSubmit="SaveAssignment">
+				<DataAnnotationsValidator />
+				<div class="form-grid">
+					<label>Fleet vehicle (optional)<select @bind="assignmentDraft.VehicleId"><option value="">Customer-owned vehicle</option>@foreach (var vehicle in Data.Vehicles){<option value="@vehicle.Id">@vehicle.MakeModel - @vehicle.LicensePlate (@vehicle.OwnerName)</option>}</select></label>
+					<label>Driver name<input @bind="assignmentDraft.DriverName" required /></label>
+					<label>Driver phone<input type="tel" @bind="assignmentDraft.DriverPhoneNumber" required /></label>
+				</div>
+				<div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseAssignmentDialog">Cancel</button><button class="action-button" type="submit">Assign trip</button></div>
+			</EditForm>
+		</dialog>
+	</div>
+}
+
+@if (chargingTripToStart is not null)
+{
+	<div class="dialog-backdrop" @onclick="CloseChargingDialog">
+		<dialog open class="form-dialog" @onclick:stopPropagation="true">
+			<div class="dialog-header"><div><p class="eyebrow">Hub dispatch</p><h2>Start charging TRP-@chargingTripToStart.Id.ToString("000")</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseChargingDialog">×</button></div>
+			<EditForm Model="chargingStartDraft" OnValidSubmit="SaveChargingSession">
+				<DataAnnotationsValidator />
+				<div class="form-grid">
+					<label>Available charging bay<select @bind="chargingStartDraft.HubBayId" required><option value="">Select a bay</option>@for (var bay = 1; bay <= GetAvailableBays(chargingTripToStart.StationId); bay++){var bayId = bay;<option value="@bayId" disabled="@IsBayOccupied(chargingTripToStart.StationId, bayId)">Bay @bayId.ToString("00") @(IsBayOccupied(chargingTripToStart.StationId, bayId) ? "(in use)" : "")</option>}</select></label>
+					<label>Battery at arrival (%)<input type="number" min="0" max="100" step="1" @bind="chargingStartDraft.InitialChargeLevel" required /></label>
+				</div>
+				<div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseChargingDialog">Cancel</button><button class="action-button" type="submit">Start session</button></div>
+			</EditForm>
+		</dialog>
+	</div>
+}
+
+@if (chargingTripToComplete is not null)
+{
+	<div class="dialog-backdrop" @onclick="CloseChargeCompletionDialog">
+		<dialog open class="form-dialog" @onclick:stopPropagation="true">
+			<div class="dialog-header"><div><p class="eyebrow">Hub dispatch</p><h2>Complete charge TRP-@chargingTripToComplete.Id.ToString("000")</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseChargeCompletionDialog">×</button></div>
+			<EditForm Model="chargeCompletionDraft" OnValidSubmit="SaveChargeCompletionAsync">
+				<DataAnnotationsValidator />
+				<div class="form-grid">
+					<label>Battery at departure (%)<input type="number" min="1" max="100" step="1" @bind="chargeCompletionDraft.FinalChargeLevel" required /></label>
+					<label>Energy delivered (kWh)<input type="number" min="0.1" step="0.1" @bind="chargeCompletionDraft.KwDelivered" required /></label>
+				</div>
+				<div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseChargeCompletionDialog">Cancel</button><button class="action-button" type="submit">Confirm charge &amp; notify</button></div>
+			</EditForm>
+		</dialog>
+	</div>
+}
+
+@if (progressTrip is not null && progressSession is not null)
+{
+	<div class="dialog-backdrop" @onclick="CloseProgressDialog">
+		<dialog open class="form-dialog" @onclick:stopPropagation="true">
+			<div class="dialog-header"><div><p class="eyebrow">Station update - TRP-@progressTrip.Id.ToString("000")</p><h2>Record battery progress</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseProgressDialog">×</button></div>
+			<p class="muted">This is a staff-entered reading; charger telemetry is not connected.</p>
+			<EditForm Model="progressDraft" OnValidSubmit="SaveProgress">
+				<DataAnnotationsValidator />
+				<div class="form-grid"><label>Current battery (%)<input type="number" min="0" max="100" step="1" @bind="progressDraft.CurrentChargePercent" required /></label></div>
+				<div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseProgressDialog">Cancel</button><button class="action-button" type="submit">Save reading</button></div>
+			</EditForm>
+		</dialog>
+	</div>
+}
+
+@code {
+	private bool isDialogOpen;
+	private bool feedbackIsError;
+	private int? sendingTripId;
+	private int? retryingSmsId;
+	private string? feedback;
+	private TripRequest tripDraft = NewTrip();
+	private TripRequest? assignmentTrip;
+	private DriverAssignmentDraft assignmentDraft = new();
+	private TripRequest? chargingTripToStart;
+	private HubChargingStartDraft chargingStartDraft = new();
+	private TripRequest? chargingTripToComplete;
+	private Vehicle? chargingVehicleToComplete;
+	private HubChargingCompletionDraft chargeCompletionDraft = new();
+	private TripRequest? progressTrip;
+	private HubSession? progressSession;
+	private HubProgressDraft progressDraft = new();
+
+	protected override async Task OnInitializedAsync()
+	{
+		try
+		{
+			var trips = await Database.TripRequests.ToListAsync();
+			var tripIds = trips.Select(trip => trip.Id).ToHashSet();
+			Data.Trips.RemoveAll(trip => tripIds.Contains(trip.Id));
+			Data.Trips.AddRange(trips);
+
+			var sessions = await Database.HubSessions.ToListAsync();
+			var sessionIds = sessions.Select(session => session.Id).ToHashSet();
+			Data.HubSessions.RemoveAll(session => sessionIds.Contains(session.Id));
+			Data.HubSessions.AddRange(sessions);
+
+			var transactions = await Database.Transactions.ToListAsync();
+			var transactionIds = transactions.Select(transaction => transaction.Id).ToHashSet();
+			Data.Transactions.RemoveAll(transaction => transactionIds.Contains(transaction.Id));
+			Data.Transactions.AddRange(transactions);
+
+			var vehicles = await Database.Vehicles.ToListAsync();
+			var vehicleIds = vehicles.Select(vehicle => vehicle.Id).ToHashSet();
+			Data.Vehicles.RemoveAll(vehicle => vehicleIds.Contains(vehicle.Id));
+			Data.Vehicles.AddRange(vehicles);
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while loading operations data.");
+			feedback = "Could not load operations data. The database is temporarily unavailable. Refresh the page to try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while loading operations data.");
+			feedback = "Could not load operations data. Refresh the page to try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private void OpenDialog()
+	{
+		tripDraft = NewTrip();
+		isDialogOpen = true;
+	}
+
+	private void CloseDialog() => isDialogOpen = false;
+
+	private void OpenAssignmentDialog(TripRequest trip)
+	{
+		assignmentTrip = trip;
+		assignmentDraft = new();
+	}
+
+	private void CloseAssignmentDialog() => assignmentTrip = null;
+
+	private void OpenChargingDialog(TripRequest trip)
+	{
+		chargingTripToStart = trip;
+		chargingStartDraft = new() { InitialChargeLevel = trip.InitialChargePercent };
+	}
+
+	private void CloseChargingDialog() => chargingTripToStart = null;
+
+	private int GetAvailableBays(string stationId) => Data.Stations.FirstOrDefault(station => station.Id == stationId)?.AvailableBays ?? 0;
+
+	private bool IsBayOccupied(string stationId, int bayId) => Data.HubSessions.Any(session =>
+		session.StationId == stationId && session.HubBayId == bayId && Data.Trips.Any(trip => trip.Id == session.TripId && trip.Status == "Charging"));
+
+	private async Task SaveChargingSession()
+	{
+		if (chargingTripToStart is null || chargingStartDraft.HubBayId is null || IsBayOccupied(chargingTripToStart.StationId, chargingStartDraft.HubBayId.Value))
+		{
+			feedback = "Choose an available charging bay before starting the session.";
+			feedbackIsError = true;
+			return;
+		}
+
+		if (chargingTripToStart.Status is not ("Picked Up" or "At hub"))
+		{
+			feedback = "This trip is no longer ready to start charging. Refresh the page and try again.";
+			feedbackIsError = true;
+			CloseChargingDialog();
+			return;
+		}
+
+		try
+		{
+			var session = new HubSession
+			{
+				Id = (await Database.HubSessions.Select(item => (int?)item.Id).MaxAsync() ?? 0) + 1,
+				TripId = chargingTripToStart.Id,
+				StationId = chargingTripToStart.StationId,
+				StationName = chargingTripToStart.StationName,
+				HubBayId = chargingStartDraft.HubBayId.Value,
+				InitialChargeLevel = $"{chargingStartDraft.InitialChargeLevel:0}%",
+				CurrentChargeLevel = $"{chargingStartDraft.InitialChargeLevel:0}%",
+				FinalChargeLevel = "In progress",
+				KwDelivered = "0",
+				EnergyCost = "Pending",
+				ChargingDuration = DateTime.UtcNow
+			};
+			await Database.HubSessions.AddAsync(session);
+			await Database.SaveChangesAsync();
+			Data.HubSessions.Add(session);
+			await ChangeTripStatus(chargingTripToStart, chargingTripToStart.Status, "Charging");
+			CloseChargingDialog();
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while saving charging session for trip {TripId}.", chargingTripToStart?.Id);
+			feedback = "Could not save the charging session. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while saving charging session for trip {TripId}.", chargingTripToStart?.Id);
+			feedback = "Could not save the charging session. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private void OpenChargeCompletionDialog(TripRequest trip, Vehicle? vehicle)
+	{
+		if (Data.HubSessions.All(session => session.TripId != trip.Id))
+		{
+			feedback = "Record a charging bay session before completing this charge.";
+			feedbackIsError = true;
+			return;
+		}
+
+		chargingTripToComplete = trip;
+		chargingVehicleToComplete = vehicle;
+		chargeCompletionDraft = new();
+	}
+
+	private void CloseChargeCompletionDialog()
+	{
+		chargingTripToComplete = null;
+		chargingVehicleToComplete = null;
+	}
+
+	private async Task SaveChargeCompletionAsync()
+	{
+		if (chargingTripToComplete is null) return;
+		var session = Data.HubSessions.FirstOrDefault(item => item.TripId == chargingTripToComplete.Id);
+		if (session is null) return;
+		if (int.TryParse(session.CurrentChargeLevel.TrimEnd('%'), out var currentChargeLevel) && chargeCompletionDraft.FinalChargeLevel < currentChargeLevel)
+		{
+			feedback = "The departure battery level cannot be lower than the arrival reading.";
+			feedbackIsError = true;
+			return;
+		}
+
+		try
+		{
+			session.FinalChargeLevel = $"{chargeCompletionDraft.FinalChargeLevel:0}%";
+			session.CurrentChargeLevel = session.FinalChargeLevel;
+			session.KwDelivered = chargeCompletionDraft.KwDelivered.ToString("0.0", CultureInfo.InvariantCulture);
+			await Database.SaveChangesAsync();
+			await ConfirmChargingCompleteAsync(chargingTripToComplete, chargingVehicleToComplete);
+			CloseChargeCompletionDialog();
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while completing charge for trip {TripId}.", chargingTripToComplete?.Id);
+			feedback = "Could not complete the charge record. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while completing charge for trip {TripId}.", chargingTripToComplete?.Id);
+			feedback = "Could not complete the charge record. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private void OpenProgressDialog(TripRequest trip, HubSession session)
+	{
+		progressTrip = trip;
+		progressSession = session;
+		progressDraft = new() { CurrentChargePercent = int.TryParse(session.CurrentChargeLevel.TrimEnd('%'), out var current) ? current : 0 };
+	}
+
+	private void CloseProgressDialog()
+	{
+		progressTrip = null;
+		progressSession = null;
+	}
+
+	private async Task SaveProgress()
+	{
+		if (progressSession is null) return;
+		if (int.TryParse(progressSession.CurrentChargeLevel.TrimEnd('%'), out var current) && progressDraft.CurrentChargePercent < current)
+		{
+			feedback = "Battery progress cannot move backwards. Correct the reading or contact a supervisor.";
+			feedbackIsError = true;
+			return;
+		}
+
+		try
+		{
+			progressSession.CurrentChargeLevel = $"{progressDraft.CurrentChargePercent:0}%";
+			await Database.SaveChangesAsync();
+			feedback = $"Battery reading updated to {progressSession.CurrentChargeLevel}.";
+			feedbackIsError = false;
+			CloseProgressDialog();
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while updating battery progress for session {SessionId}, trip {TripId}.", progressSession?.Id, progressTrip?.Id);
+			feedback = "Could not save the battery reading. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while updating battery progress for session {SessionId}, trip {TripId}.", progressSession?.Id, progressTrip?.Id);
+			feedback = "Could not save the battery reading. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private async Task VerifyTripPayment(TripRequest trip)
+	{
+		if (trip.Status != "Awaiting payment verification" || string.IsNullOrWhiteSpace(trip.PaymentProofStorageName) || string.IsNullOrWhiteSpace(trip.PaymentReference))
+		{
+			feedback = "A payment reference and uploaded receipt are required before verification.";
+			feedbackIsError = true;
+			return;
+		}
+
+		try
+		{
+			trip.PaymentStatus = "Paid - verified";
+			trip.Status = "Requested";
+			SetTransactionSettled(trip, trip.PaymentReference, trip.PaymentMethod);
+			await Database.SaveChangesAsync();
+			feedback = $"Payment for TRP-{trip.Id:000} verified. The request is ready for station confirmation or driver assignment.";
+			feedbackIsError = false;
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while verifying payment for trip {TripId}.", trip?.Id);
+			feedback = "Could not verify the payment. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while verifying payment for trip {TripId}.", trip?.Id);
+			feedback = "Could not verify the payment. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private async Task ConfirmArrivalPayment(TripRequest trip)
+	{
+		if (trip.Status != "Payment due at station") return;
+
+		try
+		{
+			trip.PaymentStatus = "Paid at station";
+			if (string.IsNullOrWhiteSpace(trip.PaymentMethod)) trip.PaymentMethod = "Cash at station";
+			if (string.IsNullOrWhiteSpace(trip.PaymentReference)) trip.PaymentReference = $"TRP-{trip.Id:000}-COUNTER";
+			trip.Status = "Requested";
+			SetTransactionSettled(trip, trip.PaymentReference, trip.PaymentMethod);
+			await Database.SaveChangesAsync();
+			feedback = $"Station payment recorded for TRP-{trip.Id:000}.";
+			feedbackIsError = false;
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while confirming arrival payment for trip {TripId}.", trip?.Id);
+			feedback = "Could not record the station payment. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while confirming arrival payment for trip {TripId}.", trip?.Id);
+			feedback = "Could not record the station payment. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private void SetTransactionSettled(TripRequest trip, string paymentReference, string paymentMethod)
+	{
+		var transaction = Data.Transactions.SingleOrDefault(item => item.TripId == trip.Id);
+		if (transaction is null) return;
+		transaction.TransactionStatus = "Settled";
+		transaction.PaymentReference = paymentReference;
+		transaction.PaymentMethod = paymentMethod;
+	}
+
+	private async Task SaveAssignment()
+	{
+		if (assignmentTrip is null || (assignmentDraft.VehicleId is not null && Data.Vehicles.All(vehicle => vehicle.Id != assignmentDraft.VehicleId)))
+		{
+			feedback = "Select a valid fleet vehicle or leave it blank for the customer's vehicle.";
+			feedbackIsError = true;
+			return;
+		}
+		if (assignmentTrip.PaymentStatus is not ("Paid - verified" or "Paid at station"))
+		{
+			feedback = "Verify payment before assigning a Verde driver.";
+			feedbackIsError = true;
+			return;
+		}
+
+		try
+		{
+			if (assignmentDraft.VehicleId is not null) assignmentTrip.VehicleId = assignmentDraft.VehicleId;
+			assignmentTrip.AssignedDriverName = assignmentDraft.DriverName;
+			assignmentTrip.DriverPhoneNumber = assignmentDraft.DriverPhoneNumber;
+			assignmentTrip.Status = "Scheduled";
+			assignmentTrip.HandoverConditionNotes = string.Empty;
+			await Database.SaveChangesAsync();
+			feedback = $"Trip TRP-{assignmentTrip.Id:000} assigned to {assignmentDraft.DriverName}.";
+			feedbackIsError = false;
+			CloseAssignmentDialog();
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while saving assignment for trip {TripId}.", assignmentTrip?.Id);
+			feedback = "Could not save the driver assignment. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while saving assignment for trip {TripId}.", assignmentTrip?.Id);
+			feedback = "Could not save the driver assignment. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private async Task RecordPickup(TripRequest trip)
+	{
+		if (string.IsNullOrWhiteSpace(trip.HandoverConditionNotes) || trip.HandoverConditionNotes == "Pre-trip inspection pending")
+		{
+			feedback = "Record the vehicle's pre-trip condition before confirming pickup.";
+			feedbackIsError = true;
+			return;
+		}
+
+		try
+		{
+			await ChangeTripStatus(trip, "Scheduled", trip.ServiceType == "Self-drive" ? "At hub" : "Picked Up");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while recording pickup for trip {TripId}.", trip?.Id);
+			feedback = "Could not record the pickup. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private async Task ChangeTripStatus(TripRequest trip, string expectedStatus, string nextStatus)
+	{
+		if (!string.Equals(trip.Status, expectedStatus, StringComparison.Ordinal))
+		{
+			feedback = $"Trip TRP-{trip.Id:000} is currently {trip.Status}; refresh before updating it.";
+			feedbackIsError = true;
+			return;
+		}
+
+		try
+		{
+			trip.Status = nextStatus;
+			await Database.SaveChangesAsync();
+			feedback = $"Trip TRP-{trip.Id:000} is now {nextStatus}.";
+			feedbackIsError = false;
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while changing trip {TripId} status from {Expected} to {Next}.", trip?.Id, expectedStatus, nextStatus);
+			feedback = "Could not update the trip status. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while changing trip {TripId} status from {Expected} to {Next}.", trip?.Id, expectedStatus, nextStatus);
+			feedback = "Could not update the trip status. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private async Task SaveTrip()
+	{
+		if (tripDraft.VehicleId is null || Data.Vehicles.All(vehicle => vehicle.Id != tripDraft.VehicleId))
+		{
+			feedback = "Select a fleet vehicle before scheduling this trip.";
+			feedbackIsError = true;
+			return;
+		}
+
+		try
+		{
+			tripDraft.Status = "Scheduled";
+			tripDraft.HandoverConditionNotes = string.Empty;
+			tripDraft.Id = (await Database.TripRequests.Select(item => (int?)item.Id).MaxAsync() ?? 0) + 1;
+			await Database.TripRequests.AddAsync(tripDraft);
+			await Database.SaveChangesAsync();
+			Data.AddTrip(tripDraft);
+			feedback = $"Trip TRP-{tripDraft.Id:000} scheduled.";
+			feedbackIsError = false;
+			CloseDialog();
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while creating new scheduled trip.");
+			feedback = "Could not create the new trip. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while creating new scheduled trip.");
+			feedback = "Could not create the new trip. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private async Task ConfirmSelfDriveBooking(TripRequest trip)
+	{
+		if (trip.ServiceType != "Self-drive" || trip.PaymentStatus is not ("Paid - verified" or "Paid at station"))
+		{
+			feedback = "Confirm payment at the station before confirming this self-drive booking.";
+			feedbackIsError = true;
+			return;
+		}
+		try
+		{
+			await ChangeTripStatus(trip, "Requested", "Scheduled");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while confirming self-drive booking for trip {TripId}.", trip?.Id);
+			feedback = "Could not confirm the self-drive booking. Please try again.";
+			feedbackIsError = true;
+		}
+	}
+
+	private Task ConfirmChargingCompleteAsync(TripRequest trip, Vehicle? vehicle) =>
+		UpdateTripStageAsync(trip, vehicle, "Charging", "Charging complete");
+
+	private Task ConfirmVehicleReturnedAsync(TripRequest trip, Vehicle? vehicle) =>
+		UpdateTripStageAsync(trip, vehicle, "Returning", "Completed");
+
+	private async Task UpdateTripStageAsync(TripRequest trip, Vehicle? vehicle, string expectedStatus, string nextStatus)
+	{
+		if (!string.Equals(trip.Status, expectedStatus, StringComparison.Ordinal))
+		{
+			feedback = $"Trip TRP-{trip.Id:000} is currently {trip.Status}; refresh the page before confirming {nextStatus}.";
+			feedbackIsError = true;
+			return;
+		}
+
+		sendingTripId = trip.Id;
+		feedback = null;
+		var queuedCount = 0;
+		try
+		{
+			var chargingComplete = nextStatus == "Charging complete";
+			var vehicleName = vehicle is null ? $"{trip.VehicleDescription} ({trip.LicensePlate})" : $"{vehicle.MakeModel} ({vehicle.LicensePlate})";
+			var customerName = vehicle?.OwnerName ?? trip.CustomerName;
+			var customerPhone = string.IsNullOrWhiteSpace(trip.CustomerPhoneNumber) ? vehicle?.OwnerPhoneNumber ?? string.Empty : trip.CustomerPhoneNumber;
+			var message = chargingComplete
+				? $"Verde Energy: Charging is complete for {vehicleName}, trip TRP-{trip.Id:000}. Driver: {trip.AssignedDriverName}."
+				: $"Verde Energy: {vehicleName} has been returned to {customerName}. Trip TRP-{trip.Id:000} is complete.";
+
+			var recipients = new[]
+			{
+				(RecipientName: customerName, PhoneNumber: customerPhone),
+				(RecipientName: trip.AssignedDriverName, PhoneNumber: trip.DriverPhoneNumber)
+			}.Where(recipient => !string.IsNullOrWhiteSpace(recipient.PhoneNumber)).DistinctBy(recipient => recipient.PhoneNumber, StringComparer.OrdinalIgnoreCase);
+
+			foreach (var recipient in recipients)
+			{
+				try
+				{
+					if (await SmsSender.SendMessageAsync(recipient.PhoneNumber, message))
+					{
+						continue;
+					}
+
+					Data.QueueSms(new QueuedSms { TripId = trip.Id, RecipientName = recipient.RecipientName, PhoneNumber = recipient.PhoneNumber, Message = message, LastError = SmsSender.NotConfiguredMessage });
+					queuedCount++;
+				}
+				catch (Exception exception)
+				{
+					Logger.LogWarning(exception, "SMS delivery failed for trip {TripId} recipient {Name}.", trip.Id, recipient.RecipientName);
+					Data.QueueSms(new QueuedSms { TripId = trip.Id, RecipientName = recipient.RecipientName, PhoneNumber = recipient.PhoneNumber, Message = message, LastError = exception.Message });
+					queuedCount++;
+				}
+			}
+
+			trip.Status = nextStatus;
+			await Database.SaveChangesAsync();
+			feedback = queuedCount == 0
+				? $"SMS sent to the vehicle owner and driver. Trip TRP-{trip.Id:000} is now {nextStatus}."
+				: $"Trip TRP-{trip.Id:000} is now {nextStatus}. {queuedCount} SMS message(s) are waiting for delivery; see SMS pending below.";
+			feedbackIsError = false;
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while updating trip {TripId} from {Expected} to {Next}.", trip?.Id, expectedStatus, nextStatus);
+			feedback = $"Could not confirm {nextStatus}. The database was temporarily unavailable. Please try again.";
+			feedbackIsError = true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while updating trip {TripId} from {Expected} to {Next}.", trip?.Id, expectedStatus, nextStatus);
+			feedback = $"Could not confirm {nextStatus}. Please try again.";
+			feedbackIsError = true;
+		}
+		finally
+		{
+			sendingTripId = null;
+		}
+	}
+
+	private async Task RetryPendingSmsAsync(QueuedSms pendingSms)
+	{
+		retryingSmsId = pendingSms.Id;
+		try
+		{
+			if (await SmsSender.SendMessageAsync(pendingSms.PhoneNumber, pendingSms.Message))
+			{
+				Data.RemoveQueuedSms(pendingSms);
+				feedback = $"SMS sent to {pendingSms.RecipientName}.";
+				feedbackIsError = false;
+			}
+			else
+			{
+				pendingSms.LastError = SmsSender.NotConfiguredMessage;
+				feedback = $"SMS is still pending for {pendingSms.RecipientName}. Configure Twilio to deliver it.";
+				feedbackIsError = true;
+			}
+		}
+		catch (Exception exception)
+		{
+			pendingSms.LastError = exception.Message;
+			feedback = $"SMS retry failed for {pendingSms.RecipientName}: {exception.Message}";
+			feedbackIsError = true;
+		}
+		finally
+		{
+			retryingSmsId = null;
+		}
+	}
+
+	private static TripRequest NewTrip() => new() { Status = "Scheduled" };
+
+	private sealed class DriverAssignmentDraft
+	{
+		public int? VehicleId { get; set; }
+		[System.ComponentModel.DataAnnotations.Required] public string DriverName { get; set; } = string.Empty;
+		[System.ComponentModel.DataAnnotations.Required] public string DriverPhoneNumber { get; set; } = string.Empty;
+	}
+
+	private sealed class HubChargingStartDraft
+	{
+		[System.ComponentModel.DataAnnotations.Required] public int? HubBayId { get; set; }
+		[System.ComponentModel.DataAnnotations.Range(0, 100)] public int InitialChargeLevel { get; set; }
+	}
+
+	private sealed class HubChargingCompletionDraft
+	{
+		[System.ComponentModel.DataAnnotations.Range(1, 100)] public int FinalChargeLevel { get; set; } = 80;
+		[System.ComponentModel.DataAnnotations.Range(typeof(decimal), "0.1", "1000")] public decimal KwDelivered { get; set; }
+	}
+
+	private sealed class HubProgressDraft
+	{
+		[System.ComponentModel.DataAnnotations.Range(0, 100)] public int CurrentChargePercent { get; set; }
+	}
+}

@@ -1,0 +1,535 @@
+@page "/book-drive"
+@layout PublicLayout
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Globalization
+@using Microsoft.EntityFrameworkCore
+@using System.Text
+@using Infrastructure.Persistence
+@inject OperationsService Operations
+@inject VerdeEnergyDbContext Database
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject IWebHostEnvironment Environment
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+@inject ILogger<DriveBooking> Logger
+
+<PageTitle>Verde Drive booking | Verde Energy</PageTitle>
+
+<main class="request-page">
+	<header class="request-heading">
+		<a href="/" class="request-back">&lt; Verde Energy</a><a href="/track" class="request-track-link">Track a request</a>
+		<p class="public-eyebrow">Verde Drive - Kigali</p>
+		<h1>@(bookingComplete ? "Request received" : "Book a charging service")</h1>
+		<p>@(bookingComplete ? "Your request is recorded. Payment proof is reviewed by Verde staff before a driver is dispatched." : "Choose a station and service. Your booking is confirmed after station and payment review.")</p>
+	</header>
+
+	@if (bookingComplete && submittedTrip is not null)
+	{
+		<section class="request-form-section booking-confirmation" aria-live="polite">
+			<p class="public-eyebrow">TRP-@submittedTrip.Id.ToString("000")</p>
+			<h2>We have your request.</h2>
+			<dl class="booking-summary">
+				<div><dt>Station</dt><dd>@submittedTrip.StationName</dd></div>
+				<div><dt>Service</dt><dd>@submittedTrip.ServiceType</dd></div>
+				<div><dt>Payment</dt><dd>@submittedTrip.PaymentStatus</dd></div>
+				<div><dt>Estimate</dt><dd>@submittedTrip.EstimatedCost</dd></div>
+			</dl>
+			<p>@(submittedTrip.PaymentStatus == "Proof submitted" ? "Your receipt is awaiting staff verification. A Verde driver will be assigned after payment is confirmed." : "Show your payment confirmation to station staff when you arrive. Your trip is not confirmed until the station accepts it.")</p>
+			<a class="action-button" href="/track">Track request <span>-&gt;</span></a>
+		</section>
+	}
+	else
+	{
+		<nav class="booking-progress" aria-label="Booking progress">
+			@foreach (var stage in stages)
+			{
+				<span class="@(step == stage.Number ? "current" : step > stage.Number ? "complete" : "")"><b>@(stage.Number + 1)</b>@stage.Label</span>
+			}
+		</nav>
+
+		@if (!string.IsNullOrWhiteSpace(feedback))
+		{
+			<p class="request-feedback" role="alert">@feedback</p>
+		}
+
+		@if (step == 0)
+		{
+			<section class="request-form-section">
+				<div class="booking-section-title"><div><p class="public-eyebrow">Step 1 - choose</p><h2>Charging station and service</h2></div><button type="button" class="filter-button" @onclick="FindNearbyStationsAsync">@(isLocating ? "Finding location..." : "Use my location")</button></div>
+				@if (!string.IsNullOrWhiteSpace(locationMessage)) { <p class="station-note" role="status">@locationMessage</p> }
+				@if (Operations.Stations.Count == 0)
+				{
+					<p class="station-empty">No charging stations are configured yet. Contact Verde Energy to book; verified station inventory must be added before online booking is enabled.</p>
+				}
+				else
+				{
+					<div class="station-list">
+						@foreach (var station in SortedStations)
+						{
+							<button type="button" class="station-option @(selectedStation?.Id == station.Id ? "selected" : "")" aria-pressed="@(selectedStation?.Id == station.Id)" @onclick="() => SelectStation(station)">
+								<span class="station-option-top"><strong>@station.Name</strong><span>@(selectedStation?.Id == station.Id ? "Selected" : "Choose")</span></span>
+								<span class="station-address">@station.Address</span>
+								<span class="station-details"><span>@station.Connector</span><span>@station.AvailableBays bays listed</span>@if (HasLocation){<span>@DistanceTo(station).ToString("0.0") km away</span>}</span>
+								<span class="station-availability">@station.Availability</span>
+							</button>
+						}
+					</div>
+					<p class="station-note">Station availability is not connected to live charger data. Please wait for confirmation before travelling.</p>
+				}
+
+				<h3 class="service-heading">Select a service</h3>
+				<div class="service-options">
+					@foreach (var service in serviceOptions)
+					{
+						<button type="button" class="service-option @(selectedService == service.Id ? "selected" : "")" aria-pressed="@(selectedService == service.Id)" @onclick="() => SelectService(service.Id)">
+							<strong>@service.Name</strong><span>@service.Description</span><b>@FormatCurrency(ServiceFee(service.Id)) service fee</b>
+						</button>
+					}
+				</div>
+
+				<div class="booking-fields-inline">
+					<label>Energy to add (%)<input type="number" min="1" max="100" step="1" @bind="requestedEnergyPercent" /></label>
+					<label>Battery now (%)<input type="number" min="0" max="100" step="1" @bind="initialChargePercent" disabled="@(selectedService == "emergency")" /></label>
+				</div>
+				<p class="station-note">The estimate uses a nominal 60 kWh battery. The station confirms the final energy and cost.</p>
+				@if (selectedService == "emergency")
+				{
+					<p class="emergency-note">Emergency recovery is for a vehicle unable to reach a charging station. Initial battery will be recorded as 0%.</p>
+				}
+				<div class="estimate-result"><span>Estimated total</span><strong>@FormatCurrency(EstimatedTotal)</strong><small>Indicative estimate only. The station confirms the final amount before payment.</small></div>
+				<div class="request-submit-row"><p>Choose a verified station listing before continuing.</p><button class="action-button" type="button" disabled="@(selectedStation is null)" @onclick="() => { feedback = null; step = 1; }">Continue to details <span>-&gt;</span></button></div>
+			</section>
+		}
+		else if (step == 1)
+		{
+			<section class="request-form-section">
+				<p class="public-eyebrow">Step 2 - details</p><h2>Vehicle and contact details</h2>
+			<div class="booking-summary compact"><div><span>Station</span><strong>@selectedStation?.Name</strong></div><div><span>Service</span><strong>@ServiceName</strong></div></div>
+			@if (isAdmin)
+			{
+				<div class="request-form-grid">
+					<label class="field-wide">Booking on behalf of (Administrator only)
+						<select value="@selectedCustomerUserId" @onchange="PopulateSelectedCustomerFields" required>
+							<option value="">Select a customer...</option>
+							@foreach (var option in customerOptions)
+							{
+								<option value="@option.UserId">@option.Display</option>
+							}
+						</select>
+					</label>
+				</div>
+				<p class="station-note">When booking for someone else, their name, phone, and customer account link are written below. The signed-in administrator is recorded as the booking operator.</p>
+			}
+			<div class="request-form-grid">
+				<label>Your name<input @bind="customerName" autocomplete="name" required /></label>
+				<label>Phone number<input type="tel" @bind="customerPhone" autocomplete="tel" required /></label>
+				<label>Vehicle make and model<input @bind="vehicleDescription" list="booking-vehicle-models" placeholder="Search or enter a model" required /><datalist id="booking-vehicle-models">@foreach (var model in OperationsService.VehicleModels){<option value="@model"></option>}</datalist></label>
+				<label>Preferred date and time<input type="datetime-local" @bind="pickupTime" required /></label>
+				@if (selectedService != "self-drive")
+				{
+					<label class="field-wide">Pickup location<input @bind="pickupLocation" autocomplete="street-address" required /></label>
+				}
+				@if (selectedService != "self-drive")
+				{
+					<label class="field-wide">Return location<input @bind="returnLocation" required /></label>
+				}
+			</div>
+			<div class="request-submit-row"><button class="filter-button" type="button" @onclick="() => step = 0">Back</button><button class="action-button" type="button" @onclick="ContinueToPayment">Continue to payment <span>-&gt;</span></button></div>
+			</section>
+		}
+		else
+		{
+			<section class="request-form-section">
+				<p class="public-eyebrow">Step 3 - payment</p><h2>Pay and submit your booking</h2>
+			<div class="booking-summary compact"><div><span>Station</span><strong>@selectedStation?.Name</strong></div><div><span>Service</span><strong>@ServiceName</strong></div><div><span>Estimated total</span><strong>@FormatCurrency(EstimatedTotal)</strong></div></div>
+			<div class="payment-instructions"><strong>Mobile money payment</strong><p>@PaymentMessage</p>@if (!string.IsNullOrWhiteSpace(MerchantNumber)){<p>Merchant number: <strong>@MerchantNumber</strong></p>}<p>MTN MoMo and Airtel Money gateways are not connected. Pay using the official merchant instructions, then enter the provider reference below.</p></div>
+			<div class="request-form-grid">
+				<label>Payment method<select @bind="paymentMethod"><option>MTN MoMo</option><option>Airtel Money</option><option>Cash at station</option></select></label>
+				<label>Provider payment reference<input @bind="paymentReference" autocomplete="off" /></label>
+				<label class="field-wide">Upload payment receipt @if (selectedService == "self-drive"){<span>(optional - you may show it at arrival)</span>}</label>
+				<InputFile OnChange="HandleProofSelected" accept="image/jpeg,image/png,application/pdf" />
+			</div>
+			@if (!string.IsNullOrWhiteSpace(proofFileName)){<p class="proof-selected" role="status">Receipt attached: @proofFileName</p>}
+			@if (selectedService != "self-drive")
+			{
+				<p class="payment-warning">A receipt is required for pickup or emergency recovery. Driver dispatch remains blocked until Verde staff verifies the payment.</p>
+			}
+			else
+			{
+				<p class="payment-warning">Receipt upload is optional for self-drive. If you do not upload one, payment must be confirmed by station staff on arrival before charging.</p>
+			}
+			<div class="request-submit-row"><button class="filter-button" type="button" @onclick="() => step = 1">Back</button><button class="action-button" type="button" disabled="@(!CanSubmit)" @onclick="SubmitBooking">Submit booking <span>-&gt;</span></button></div>
+		</section>
+		}
+	}
+</main>
+
+@code {
+	private readonly (int Number, string Label)[] stages = [(0, "Station"), (1, "Details"), (2, "Payment")];
+	private readonly (string Id, string Name, string Description)[] serviceOptions = [
+		("self-drive", "Self-drive", "Bring your EV to the selected station. No Verde driver is required."),
+		("pickup", "Verde pickup", "A Verde driver collects your vehicle and returns it after charging."),
+		("emergency", "Emergency recovery", "Recovery for a stranded EV, including a 0% battery breakdown.")];
+	private readonly List<ChargingStation> nearbyStations = [];
+	private IJSObjectReference? locationModule;
+	private int step;
+	private bool isLocating;
+	private bool bookingComplete;
+	private string? feedback;
+	private string? locationMessage;
+	private string? proofFileName;
+	private byte[]? proofBytes;
+	private string selectedService = "self-drive";
+	private string paymentMethod = "MTN MoMo";
+	private string paymentReference = string.Empty;
+	private string customerName = string.Empty;
+	private string customerPhone = string.Empty;
+	private bool isAdmin;
+	private string signedInUserId = string.Empty;
+	private string? selectedCustomerUserId;
+	private readonly List<(string UserId, string Display)> customerOptions = [];
+	private string vehicleDescription = string.Empty;
+	private string pickupLocation = string.Empty;
+	private string returnLocation = string.Empty;
+	private DateTime pickupTime = DateTime.Now.AddHours(2);
+	private int initialChargePercent = 30;
+	private int requestedEnergyPercent = 20;
+	private double? userLatitude;
+	private double? userLongitude;
+	private ChargingStation? selectedStation;
+	private TripRequest? submittedTrip;
+	private bool HasLocation => userLatitude is not null && userLongitude is not null;
+	private string ServiceName => serviceOptions.FirstOrDefault(option => option.Id == selectedService).Name ?? "Charging";
+	private string MerchantNumber => Configuration["PaymentInstructions:MerchantNumber"] ?? string.Empty;
+	private string PaymentMessage => Configuration["PaymentInstructions:Message"] ?? "Use Verde Energy's official mobile money merchant account.";
+	private decimal RequestedEnergyKwh => Math.Round(requestedEnergyPercent / 100m * Configuration.GetValue<decimal>("TripPricing:NominalBatteryCapacityKwh", 60m), 2);
+	private decimal EstimatedTotal => RequestedEnergyKwh * Configuration.GetValue<decimal>("TripPricing:EnergyCostPerKwh", 450m) + ServiceFee(selectedService);
+	private bool CanSubmit => customerName.Trim().Length > 1 && customerPhone.Trim().Length >= 7 && vehicleDescription.Trim().Length > 1 && (selectedService == "self-drive" || returnLocation.Trim().Length > 2) && (selectedService == "self-drive" || pickupLocation.Trim().Length > 2) && pickupTime > DateTime.Now && requestedEnergyPercent is >= 1 and <= 100 && (selectedService == "self-drive" || (proofBytes is not null && paymentReference.Trim().Length > 2));
+
+	protected override async Task OnInitializedAsync()
+	{
+		nearbyStations.AddRange(Operations.Stations.OrderBy(station => station.Name));
+		var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+		isAdmin = authState.User.IsInRole("Admin");
+		signedInUserId = authState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? string.Empty;
+		if (isAdmin)
+		{
+			var users = await Database.Users.AsNoTracking().OrderBy(u => u.FullName).ToListAsync();
+			foreach (var user in users)
+			{
+				var label = string.IsNullOrWhiteSpace(user.FullName) ? user.Email ?? user.UserName ?? "Unnamed user" : $"{user.FullName} <{user.Email ?? user.UserName}>";
+				customerOptions.Add((user.Id, label));
+			}
+		}
+		if (string.IsNullOrWhiteSpace(customerName))
+		{
+			var current = await Database.Users.FindAsync(signedInUserId);
+			if (current is not null)
+			{
+				customerName = string.IsNullOrWhiteSpace(current.FullName) ? (current.UserName ?? string.Empty) : current.FullName;
+				customerPhone = current.PhoneNumber ?? string.Empty;
+			}
+		}
+	}
+
+	private async void PopulateSelectedCustomerFields(ChangeEventArgs args)
+	{
+		var userId = args.Value?.ToString();
+		selectedCustomerUserId = string.IsNullOrWhiteSpace(userId) ? null : userId;
+		if (string.IsNullOrWhiteSpace(selectedCustomerUserId)) return;
+		var user = await Database.Users.FindAsync(selectedCustomerUserId);
+		if (user is null) return;
+		customerName = string.IsNullOrWhiteSpace(user.FullName) ? (user.UserName ?? string.Empty) : user.FullName;
+		customerPhone = user.PhoneNumber ?? string.Empty;
+		StateHasChanged();
+	}
+
+	private IEnumerable<ChargingStation> SortedStations => HasLocation
+		? nearbyStations.OrderBy(DistanceTo)
+		: nearbyStations;
+
+	private void SelectStation(ChargingStation station) => selectedStation = station;
+	private void SelectService(string service) { selectedService = service; if (service == "emergency") initialChargePercent = 0; else if (initialChargePercent == 0) initialChargePercent = 30; }
+	private decimal ServiceFee(string service) => Configuration.GetValue<decimal>($"TripPricing:{service switch { "self-drive" => "SelfDriveServiceFee", "pickup" => "PickupServiceFee", _ => "EmergencyRecoveryFee" }}", service == "pickup" ? 5000m : service == "emergency" ? 25000m : 0m);
+	private string FormatCurrency(decimal amount) => $"FRW {amount.ToString("N0", CultureInfo.InvariantCulture)}";
+	private void ContinueToPayment()
+	{
+		feedback = null;
+		if (!CanContinueToPayment)
+		{
+			feedback = "Complete the required contact, vehicle, location and future pickup details, and enter energy from 1% to 100%.";
+			return;
+		}
+		step = 2;
+	}
+	private bool CanContinueToPayment => customerName.Trim().Length > 1 && customerPhone.Trim().Length >= 7 && vehicleDescription.Trim().Length > 1 && (selectedService == "self-drive" || returnLocation.Trim().Length > 2) && (selectedService == "self-drive" || pickupLocation.Trim().Length > 2) && pickupTime > DateTime.Now && requestedEnergyPercent is >= 1 and <= 100;
+
+	private async Task HandleProofSelected(InputFileChangeEventArgs args)
+	{
+		feedback = null;
+		var file = args.File;
+		if (file.Size is <= 0 or > 5 * 1024 * 1024 || file.ContentType is not ("image/jpeg" or "image/png" or "application/pdf"))
+		{
+			proofFileName = null;
+			proofBytes = null;
+			feedback = "Upload a JPG, PNG or PDF receipt no larger than 5 MB.";
+			return;
+		}
+
+		try
+		{
+			await using var input = file.OpenReadStream(5 * 1024 * 1024);
+			using var buffer = new MemoryStream();
+			await input.CopyToAsync(buffer);
+			var bytes = buffer.ToArray();
+			var validSignature = file.ContentType switch
+			{
+				"image/png" => bytes.Length >= 8 && bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
+				"image/jpeg" => bytes.Length >= 3 && bytes[0] == 255 && bytes[1] == 216 && bytes[2] == 255,
+				"application/pdf" => bytes.Length >= 5 && Encoding.ASCII.GetString(bytes, 0, 5) == "%PDF-",
+				_ => false
+			};
+			if (!validSignature)
+			{
+				proofFileName = null;
+				proofBytes = null;
+				feedback = "The receipt file contents do not match its file type.";
+				return;
+			}
+
+			proofFileName = Path.GetFileName(file.Name);
+			proofBytes = bytes;
+		}
+		catch (IOException ex)
+		{
+			Logger.LogWarning(ex, "Failed to read payment proof file {FileName}.", file?.Name);
+			proofFileName = null;
+			proofBytes = null;
+			feedback = "We could not read that receipt. Please choose it again.";
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning(ex, "Unexpected error while reading payment proof file {FileName}.", file?.Name);
+			proofFileName = null;
+			proofBytes = null;
+			feedback = "That receipt could not be processed. Try a different file or show the receipt at the station instead.";
+		}
+	}
+
+	private async Task SubmitBooking()
+	{
+		var station = selectedStation;
+		if (station is null || !CanSubmit)
+		{
+			feedback = selectedStation is null ? "Choose a charging station first." : "Complete the required details and attach a payment receipt.";
+			return;
+		}
+
+		var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+		var signerUserId = authenticationState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+		var signerIsAdmin = authenticationState.User.IsInRole("Admin");
+		var effectiveCustomerUserId = signerIsAdmin
+			? (string.IsNullOrWhiteSpace(selectedCustomerUserId) ? signerUserId : selectedCustomerUserId)
+			: signerUserId;
+		if (string.IsNullOrWhiteSpace(effectiveCustomerUserId))
+		{
+			feedback = "Sign in to submit a booking.";
+			return;
+		}
+		var customerDisplay = await Database.Users.FindAsync(effectiveCustomerUserId);
+		if (customerDisplay is not null)
+		{
+			if (string.IsNullOrWhiteSpace(customerName)) customerName = customerDisplay.FullName ?? customerDisplay.UserName ?? string.Empty;
+			if (string.IsNullOrWhiteSpace(customerPhone)) customerPhone = customerDisplay.PhoneNumber ?? string.Empty;
+		}
+
+		var proofSubmitted = proofBytes is not null;
+		if (proofSubmitted && string.IsNullOrWhiteSpace(paymentReference))
+		{
+			feedback = "Enter the payment provider reference shown on your receipt, or remove the file and choose to show proof at the station.";
+			return;
+		}
+
+		var paymentStatus = proofSubmitted ? "Proof submitted" : "Due on arrival";
+		var status = proofSubmitted ? "Awaiting payment verification" : "Payment due at station";
+		string? storedProofName = null;
+
+		try
+		{
+			if (proofBytes is not null)
+			{
+				var proofDirectory = Path.Combine(Environment.ContentRootPath, "App_Data", "PaymentProofs");
+				Directory.CreateDirectory(proofDirectory);
+				var extension = Path.GetExtension(proofFileName ?? string.Empty).ToLowerInvariant();
+				storedProofName = $"{Guid.NewGuid():N}{extension}";
+				await File.WriteAllBytesAsync(Path.Combine(proofDirectory, storedProofName), proofBytes);
+			}
+		}
+		catch (IOException ex)
+		{
+			Logger.LogError(ex, "Could not store payment proof file for booking attempt by user {UserId}.", effectiveCustomerUserId);
+			feedback = "We could not store your payment receipt. Please try again or show the receipt at the station.";
+			return;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while storing payment proof for user {UserId}.", effectiveCustomerUserId);
+			feedback = "We could not store your payment receipt. Please try again.";
+			return;
+		}
+
+		var trip = new TripRequest
+		{
+			CustomerUserId = effectiveCustomerUserId,
+			CustomerName = customerName.Trim(),
+			CustomerPhoneNumber = customerPhone.Trim(),
+			PickupLocation = selectedService == "self-drive" ? station.Address : pickupLocation.Trim(),
+			ReturnLocation = selectedService == "self-drive" ? station.Address : returnLocation.Trim(),
+			PickupTime = pickupTime,
+			ReturnTime = pickupTime.AddHours(2),
+			AssignedDriverName = "Unassigned",
+			Status = status,
+			HandoverConditionNotes = "Pre-trip inspection pending",
+			ServiceType = ServiceName,
+			StationId = station.Id,
+			StationName = station.Name,
+			VehicleDescription = vehicleDescription.Trim(),
+			LicensePlate = $"VEH-{Guid.NewGuid():N}"[..12].ToUpperInvariant(),
+			InitialChargePercent = selectedService == "emergency" ? 0 : initialChargePercent,
+			RequestedEnergyPercent = requestedEnergyPercent,
+			RequestedEnergyKwh = RequestedEnergyKwh,
+			EstimatedCost = FormatCurrency(EstimatedTotal),
+			PaymentMethod = paymentMethod,
+			PaymentReference = paymentReference.Trim(),
+			PaymentStatus = paymentStatus,
+			PaymentProofFileName = proofFileName ?? string.Empty,
+			PaymentProofStorageName = storedProofName ?? string.Empty
+		};
+		var transaction = new Transaction
+		{
+			UserId = trip.CustomerName,
+			OwnerUserId = effectiveCustomerUserId,
+			Amount = EstimatedTotal.ToString("0.00", CultureInfo.InvariantCulture),
+			PaymentMethod = paymentMethod,
+			PaymentReference = string.IsNullOrWhiteSpace(paymentReference) ? "Awaiting arrival payment" : paymentReference.Trim(),
+			TransactionStatus = "Pending",
+			ServiceType = $"Verde Drive - {ServiceName}"
+		};
+		try
+		{
+			await using var databaseTransaction = await Database.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+			trip.Id = await NextAvailableIdAsync(Database.TripRequests.Select(item => item.Id));
+			transaction.Id = await NextAvailableIdAsync(Database.Transactions.Select(item => item.Id));
+			await Database.TripRequests.AddAsync(trip);
+			await Database.SaveChangesAsync();
+			transaction.TripId = trip.Id;
+			await Database.Transactions.AddAsync(transaction);
+			await Database.SaveChangesAsync();
+			await databaseTransaction.CommitAsync();
+			Operations.AddTrip(trip);
+			Operations.AddTransaction(transaction);
+		}
+		catch (DbUpdateException ex)
+		{
+			Logger.LogError(ex, "Database error while saving booking for user {UserId}.", effectiveCustomerUserId);
+			SafeDeleteProof(storedProofName);
+			feedback = "We could not save your booking. Please try again or contact Verde Energy.";
+			return;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Unexpected error while saving booking for user {UserId}.", effectiveCustomerUserId);
+			SafeDeleteProof(storedProofName);
+			feedback = "We could not save your booking. Please try again or contact Verde Energy.";
+			return;
+		}
+
+		submittedTrip = trip;
+		bookingComplete = true;
+	}
+
+	private void SafeDeleteProof(string? storedProofName)
+	{
+		if (storedProofName is null) return;
+		try
+		{
+			var proofPath = Path.Combine(Environment.ContentRootPath, "App_Data", "PaymentProofs", storedProofName);
+			if (File.Exists(proofPath))
+			{
+				File.Delete(proofPath);
+			}
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning(ex, "Failed to clean up orphan payment proof file {ProofName} after failed booking.", storedProofName);
+		}
+	}
+
+	private static async Task<int> NextAvailableIdAsync(IQueryable<int> ids) =>
+		(await ids.Select(id => (int?)id).MaxAsync() ?? 0) + 1;
+
+	private async Task FindNearbyStationsAsync()
+	{
+		isLocating = true;
+		locationMessage = null;
+		try
+		{
+			locationModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/station-location.js");
+			var position = await locationModule.InvokeAsync<BrowserPosition>("getCurrentPosition");
+			if (position.Error is not null)
+			{
+				locationMessage = position.Error;
+			}
+			else
+			{
+				userLatitude = position.Latitude;
+				userLongitude = position.Longitude;
+				locationMessage = "Stations are sorted by distance from your current location.";
+			}
+		}
+		catch (JSException ex)
+		{
+			Logger.LogInformation(ex, "Browser location unavailable for user.");
+			locationMessage = "Location access is unavailable. Showing configured stations without distance sorting.";
+		}
+		catch (TaskCanceledException)
+		{
+			locationMessage = "Location request was cancelled. Showing configured stations without distance sorting.";
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning(ex, "Unexpected error while retrieving browser location.");
+			locationMessage = "Location lookup failed. Showing configured stations without distance sorting.";
+		}
+		finally
+		{
+			isLocating = false;
+		}
+	}
+
+	private double DistanceTo(ChargingStation station)
+	{
+		if (!HasLocation) return double.MaxValue;
+		const double earthRadiusKm = 6371;
+		var latitudeDelta = DegreesToRadians(station.Latitude - userLatitude!.Value);
+		var longitudeDelta = DegreesToRadians(station.Longitude - userLongitude!.Value);
+		var a = Math.Sin(latitudeDelta / 2) * Math.Sin(latitudeDelta / 2) + Math.Cos(DegreesToRadians(userLatitude.Value)) * Math.Cos(DegreesToRadians(station.Latitude)) * Math.Sin(longitudeDelta / 2) * Math.Sin(longitudeDelta / 2);
+		return earthRadiusKm * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+	}
+
+	private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180;
+
+	public async ValueTask DisposeAsync()
+	{
+		if (locationModule is not null) await locationModule.DisposeAsync();
+	}
+
+	private sealed class BrowserPosition
+	{
+		public double Latitude { get; set; }
+		public double Longitude { get; set; }
+		public string? Error { get; set; }
+	}
+}

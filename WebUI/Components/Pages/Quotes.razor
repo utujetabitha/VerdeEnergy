@@ -1,0 +1,57 @@
+@page "/quotes"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject OperationsService Operations
+@using System.Globalization
+
+<PageTitle>Installations | Verde Energy</PageTitle>
+
+<div class="page-heading"><div><p class="eyebrow">Energy infrastructure</p><h1>Installation quotes</h1><p class="lede">Turn site requests into confident energy projects.</p></div><button class="action-button" type="button" @onclick="OpenDialog"><span>+</span> New quote</button></div>
+<div class="quote-visual"><img src="images/verde-photo2.jpeg" alt="Verde Energy green energy mark" /><div><p class="eyebrow">From request to reality</p><strong>Build the next charging point with confidence.</strong><span>Site data, engineering, and cost estimates in one place.</span></div></div>
+<section class="panel page-panel"><div class="panel-header"><div><p class="eyebrow">Quote pipeline</p><h2>Site surveys &amp; installation quotes</h2></div><span class="table-count">@Operations.Quotes.Count total</span></div><div class="table-wrap"><table><thead><tr><th>Quote</th><th>Property &amp; client</th><th>Electrical survey</th><th>Engineer</th><th>Indicative / final (FRW)</th><th>Status</th><th></th></tr></thead><tbody>@if (Operations.Quotes.Count == 0){<tr><td colspan="7" class="muted">No site surveys submitted yet.</td></tr>}@foreach (var quote in Operations.Quotes){<tr><td><strong>QTE-@quote.Id.ToString("000")</strong><br /><span class="muted">@quote.ClientName - @quote.ClientPhoneNumber</span></td><td>@quote.PropertyType</td><td>@quote.SupplyType<br /><span class="muted">Cable run @quote.DistanceToPanelMeter m</span></td><td>@quote.AssignedEngineerId</td><td><strong>@quote.EstimatedCost</strong></td><td><span class="status quote-status">@quote.Status</span></td><td>@if (quote.Status != "Final quote issued"){<button class="action-button" type="button" @onclick="() => OpenReview(quote)">Review &amp; issue</button>}</td></tr>}</tbody></table></div></section>
+
+@if (isDialogOpen)
+{
+	<div class="dialog-backdrop" @onclick="CloseDialog"><dialog open class="form-dialog" @onclick:stopPropagation="true"><div class="dialog-header"><div><p class="eyebrow">Energy infrastructure</p><h2>New installation quote</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseDialog">×</button></div><EditForm Model="quoteDraft" OnValidSubmit="SaveQuote"><DataAnnotationsValidator /><div class="form-grid"><label>Client name<input @bind="quoteDraft.ClientName" required /></label><label>Client phone<input type="tel" @bind="quoteDraft.ClientPhoneNumber" required /></label><label>Property type<select @bind="quoteDraft.PropertyType"><option value="">Select property type</option><option>Home</option><option>Office</option><option>Warehouse</option></select></label><label>Supply type<select @bind="quoteDraft.SupplyType"><option value="">Select supply type</option><option>Single-phase</option><option>Three-phase</option></select></label><label>Panel distance<input @bind="quoteDraft.DistanceToPanelMeter" required /></label><label>Estimated cost (FRW)<input type="number" min="0" step="1" @bind="quoteDraft.EstimatedCost" required /></label></div><div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseDialog">Cancel</button><button class="action-button" type="submit">Create quote</button></div></EditForm></dialog></div>
+}
+
+@if (selectedQuote is not null)
+{
+	<div class="dialog-backdrop" @onclick="CloseReview">
+		<dialog open class="form-dialog" @onclick:stopPropagation="true">
+			<div class="dialog-header"><div><p class="eyebrow">Engineering review - QTE-@selectedQuote.Id.ToString("000")</p><h2>Issue final installation quote</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseReview">×</button></div>
+			<p class="muted">@selectedQuote.ClientName · @selectedQuote.PropertyType · @selectedQuote.SupplyType · @selectedQuote.DistanceToPanelMeter m cable run</p>
+			<p>Current indicative estimate: <strong>@selectedQuote.EstimatedCost</strong></p>
+			<EditForm Model="this" OnValidSubmit="IssueFinalQuote">
+				<div class="form-grid"><label>Approved final amount (FRW)<input type="number" min="1" step="1" @bind="finalQuoteCost" required /></label></div>
+				<div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseReview">Cancel</button><button class="action-button" type="submit">Issue final quote</button></div>
+			</EditForm>
+		</dialog>
+	</div>
+}
+
+@code {
+	private bool isDialogOpen;
+	private InstallationQuote quoteDraft = NewQuote();
+	private InstallationQuote? selectedQuote;
+	private decimal finalQuoteCost;
+	private void OpenDialog() { quoteDraft = NewQuote(); isDialogOpen = true; }
+	private void CloseDialog() => isDialogOpen = false;
+	private void SaveQuote() { quoteDraft.Id = Operations.Quotes.Count == 0 ? 1 : Operations.Quotes.Max(q => q.Id) + 1; quoteDraft.Status = "Site survey requested"; quoteDraft.AssignedEngineerId = "Unassigned"; Operations.AddQuote(quoteDraft); CloseDialog(); }
+	private void OpenReview(InstallationQuote quote)
+	{
+		selectedQuote = quote;
+		var amount = quote.EstimatedCost.Replace("FRW", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+		finalQuoteCost = decimal.TryParse(amount, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
+	}
+	private void CloseReview() => selectedQuote = null;
+	private void IssueFinalQuote()
+	{
+		if (selectedQuote is null || finalQuoteCost <= 0) return;
+		selectedQuote.EstimatedCost = Operations.FormatCurrency(finalQuoteCost.ToString(CultureInfo.InvariantCulture));
+		selectedQuote.Status = "Final quote issued";
+		selectedQuote.AssignedEngineerId = "Engineering team";
+		CloseReview();
+	}
+	private static InstallationQuote NewQuote() => new() { Status = "New request" };
+}

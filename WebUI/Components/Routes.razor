@@ -1,0 +1,33 @@
+@inject ILogger<Routes> Logger
+
+<Router AppAssembly="typeof(Program).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
+            <NotAuthorized Context="authenticationState">
+                @if (authenticationState.User.Identity?.IsAuthenticated == true)
+                {
+                    <LayoutView Layout="typeof(Layout.PublicLayout)">
+                        <main class="auth-page"><p class="public-eyebrow">Access restricted</p><h1>Administrator access required</h1><p class="auth-lede">Your account cannot view this system area.</p><a class="action-button" href="/account">Go to my account</a></main>
+                    </LayoutView>
+                }
+                else
+                {
+                    <LayoutView Layout="typeof(Layout.PublicLayout)">
+                        <main class="auth-page"><p class="public-eyebrow">Sign in required</p><h1>Please sign in</h1><p class="auth-lede">Sign in to continue to your account.</p><a class="action-button" href="/login">Sign in</a></main>
+                    </LayoutView>
+                }
+            </NotAuthorized>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+</Router>
+
+@code {
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+        {
+            Logger.LogDebug("Routes rendered and router initialized.");
+        }
+    }
+}

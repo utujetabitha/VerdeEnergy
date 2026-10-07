@@ -1,0 +1,23 @@
+@page "/consulting"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject OperationsService Operations
+
+<PageTitle>Consulting | Verde Energy</PageTitle>
+
+<div class="page-heading"><div><p class="eyebrow">Advisory practice</p><h1>Consulting projects</h1><p class="lede">Help corporate partners move to a cleaner operating model.</p></div><button class="action-button" type="button" @onclick="OpenDialog"><span>+</span> Start project</button></div>
+<section class="panel page-panel"><div class="panel-header"><div><p class="eyebrow">Delivery board</p><h2>Active engagements</h2></div><span class="table-count">@Operations.ConsultingProjects.Count live</span></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Client</th><th>Service</th><th>Contract (FRW)</th><th>Completion</th><th>Latest report</th></tr></thead><tbody>@foreach (var project in Operations.ConsultingProjects){<tr><td><strong>CNS-@project.Id.ToString("000")</strong></td><td>@project.CorporateClientName</td><td>@project.ServiceCategory</td><td><strong>@project.ContractValue</strong></td><td>@project.CompletionDate.ToString("dd MMM yyyy")</td><td><span class="muted">@project.AuditReport</span></td></tr>}</tbody></table></div></section>
+
+@if (isDialogOpen)
+{
+	<div class="dialog-backdrop" @onclick="CloseDialog"><dialog open class="form-dialog" @onclick:stopPropagation="true"><div class="dialog-header"><div><p class="eyebrow">Advisory practice</p><h2>Start consulting project</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseDialog">×</button></div><EditForm Model="projectDraft" OnValidSubmit="SaveProject"><DataAnnotationsValidator /><div class="form-grid"><label>Corporate client name<input @bind="projectDraft.CorporateClientName" required /></label><label>Client phone<input type="tel" @bind="projectDraft.CorporateClientPhoneNumber" required /></label><label>Service category<input @bind="projectDraft.ServiceCategory" required /></label><label>Contract value (FRW)<input type="number" min="0" step="1" @bind="projectDraft.ContractValue" required /></label><label>Completion date<input type="date" @bind="projectDraft.CompletionDate" required /></label></div><div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseDialog">Cancel</button><button class="action-button" type="submit">Start project</button></div></EditForm></dialog></div>
+}
+
+@code {
+	private bool isDialogOpen;
+	private ConsultingProject projectDraft = NewProject();
+	private void OpenDialog() { projectDraft = NewProject(); isDialogOpen = true; }
+	private void CloseDialog() => isDialogOpen = false;
+	private void SaveProject() { projectDraft.Id = Operations.ConsultingProjects.Count == 0 ? 1 : Operations.ConsultingProjects.Max(p => p.Id) + 1; projectDraft.AuditReport = "Project kickoff pending"; Operations.AddConsultingProject(projectDraft); CloseDialog(); }
+	private static ConsultingProject NewProject() => new() { AuditReport = "Project kickoff pending" };
+}

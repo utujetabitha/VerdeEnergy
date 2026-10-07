@@ -1,0 +1,23 @@
+@page "/vehicles"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject OperationsService Operations
+
+<PageTitle>Fleet | Verde Energy</PageTitle>
+
+<div class="page-heading"><div><p class="eyebrow">Fleet directory</p><h1>Vehicles</h1><p class="lede">Keep every electric vehicle ready for its next journey.</p></div><button class="action-button" type="button" @onclick="OpenDialog"><span>+</span> Add vehicle</button></div>
+<section class="fleet-grid">@foreach (var vehicle in Operations.Vehicles){<article class="vehicle-card"><div class="vehicle-top"><span class="vehicle-mark">EV</span><span class="status available">Available</span></div><h2>@vehicle.MakeModel</h2><p class="plate">@vehicle.LicensePlate</p><div class="vehicle-stats"><div><span>Battery</span><strong>@vehicle.BatteryCapacity</strong></div><div><span>Charge target</span><strong>@vehicle.PreferredChargeTarget</strong></div></div><div class="vehicle-footer"><span>@vehicle.OwnerName</span><a href="/operations">View activity →</a></div></article>}</section>
+
+@if (isDialogOpen)
+{
+	<div class="dialog-backdrop" @onclick="CloseDialog"><dialog open class="form-dialog" @onclick:stopPropagation="true"><div class="dialog-header"><div><p class="eyebrow">Fleet directory</p><h2>Add vehicle</h2></div><button class="dialog-close" type="button" aria-label="Close" @onclick="CloseDialog">×</button></div><EditForm Model="vehicleDraft" OnValidSubmit="SaveVehicle"><DataAnnotationsValidator /><div class="form-grid"><label>Owner name<input @bind="vehicleDraft.OwnerName" required /></label><label>Owner phone<input type="tel" @bind="vehicleDraft.OwnerPhoneNumber" required /></label><label>Make and model<input @bind="vehicleDraft.MakeModel" list="fleet-vehicle-models" placeholder="Search or enter a model" required /><datalist id="fleet-vehicle-models">@foreach (var model in OperationsService.VehicleModels){<option value="@model"></option>}</datalist></label><label>License plate<input @bind="vehicleDraft.LicensePlate" required /></label><label>Battery capacity<input @bind="vehicleDraft.BatteryCapacity" required /></label><label>Charge target<input @bind="vehicleDraft.PreferredChargeTarget" required /></label></div><div class="dialog-actions"><button class="filter-button" type="button" @onclick="CloseDialog">Cancel</button><button class="action-button" type="submit">Save vehicle</button></div></EditForm></dialog></div>
+}
+
+@code {
+	private bool isDialogOpen;
+	private Vehicle vehicleDraft = NewVehicle();
+	private void OpenDialog() { vehicleDraft = NewVehicle(); isDialogOpen = true; }
+	private void CloseDialog() => isDialogOpen = false;
+	private void SaveVehicle() { vehicleDraft.Id = Operations.Vehicles.Count == 0 ? 1 : Operations.Vehicles.Max(v => v.Id) + 1; Operations.AddVehicle(vehicleDraft); CloseDialog(); }
+	private static Vehicle NewVehicle() => new();
+}

@@ -1,0 +1,87 @@
+@inherits LayoutComponentBase
+@inject NavigationManager Navigation
+@inject ILogger<MainLayout> Logger
+@using VerdeEnergy.WebUI.Components.Layout
+
+<LoggingErrorBoundary OnError="HandleError">
+    <ChildContent>
+        @if (Navigation.ToBaseRelativePath(Navigation.Uri).TrimEnd('/') == "")
+        {
+            @Body
+        }
+        else
+        {
+            <div class="page">
+                <div class="sidebar">
+                    <NavMenu />
+                </div>
+
+                <main>
+                    <div class="top-row px-4">
+                        <span class="system-status"><span></span> System operational</span>
+                        <AuthorizeView>
+                            <Authorized>
+                                <span class="user-chip">@(context.User.Identity?.Name ?? "User") <strong>@(context.User.IsInRole("Admin") ? "AD" : "US")</strong></span>
+                                <a href="/logout" class="ms-3 text-secondary text-decoration-none">Sign out</a>
+                            </Authorized>
+                            <NotAuthorized>
+                                <span class="user-chip">Operations desk <strong>OD</strong></span>
+                                <a href="/login" class="ms-3 text-secondary text-decoration-none">Sign in</a>
+                            </NotAuthorized>
+                        </AuthorizeView>
+                    </div>
+
+                    <article class="content px-4">
+                        @Body
+                    </article>
+                </main>
+            </div>
+        }
+    </ChildContent>
+    <ErrorContent Context="exception">
+        <div class="page">
+            <div class="sidebar">
+                <NavMenu />
+            </div>
+            <main>
+                <article class="content px-4">
+                    <section class="panel page-panel">
+                        <p class="eyebrow">System</p>
+                        <h1>Something went wrong</h1>
+                        <p class="lede">The page hit an unexpected error and was stopped safely. Your data has not been lost.</p>
+                        @if (errorMessage is not null)
+                        {
+                            <p class="form-error" role="alert">@errorMessage</p>
+                        }
+                        <p>
+                            <button class="action-button" type="button" @onclick="Recover">Try again</button>
+                            <a class="action-button ghost" href="/">Return to home</a>
+                        </p>
+                    </section>
+                </article>
+            </main>
+        </div>
+    </ErrorContent>
+</LoggingErrorBoundary>
+
+<div id="blazor-error-ui" data-nosnippet style="display:none;">
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>
+
+@code {
+    private string? errorMessage;
+
+    private void HandleError(Exception exception)
+    {
+        errorMessage = "A temporary error occurred in this view. Use the action below to reload the screen.";
+        Logger.LogError(exception, "Unhandled component exception in MainLayout path: {Path}", Navigation.Uri);
+    }
+
+    private void Recover()
+    {
+        errorMessage = null;
+        Navigation.NavigateTo(Navigation.Uri, forceLoad: false);
+    }
+}

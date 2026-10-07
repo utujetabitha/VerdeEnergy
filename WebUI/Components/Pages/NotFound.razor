@@ -1,0 +1,30 @@
+@page "/not-found"
+@layout MainLayout
+@inject ILogger<NotFound> Logger
+
+<PageTitle>Not Found | Verde Energy</PageTitle>
+
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">404</p>
+        <h1>Page not found</h1>
+        <p class="lede">We could not find the page you asked for. It may have been moved, renamed, or it does not exist.</p>
+    </div>
+    <a class="action-button" href="/">Go home <span>-></span></a>
+</div>
+
+<section class="panel page-panel">
+    <h2>What you can do</h2>
+    <ul class="mt-2">
+        <li>Check that the address in the browser bar is correct.</li>
+        <li>Use the menu on the left to navigate to the area you need.</li>
+        <li><a href="/">Return to the Verde Energy home page.</a></li>
+    </ul>
+</section>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Logger.LogWarning("NotFound page served for request path.");
+    }
+}
